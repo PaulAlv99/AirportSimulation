@@ -1,0 +1,17 @@
+target/
+.idea/
+.codex/
+.ssh/
+.docker/
+.airport-simulation-git/
+.local/
+.cache/
+.agents/
+.bash_history
+.bash_logout
+.bashrc
+.profile
+*.iml
+logs/*.log
+saves/*.json
+data/generated/*.csv

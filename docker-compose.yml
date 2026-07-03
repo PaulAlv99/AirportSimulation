@@ -1,0 +1,10 @@
+services:
+  airport-simulation:
+    build: .
+    image: airport-simulation-cli:latest
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./saves:/app/saves
