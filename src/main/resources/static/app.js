@@ -55,7 +55,7 @@ function bindElements() {
         "disruption-form", "operations-kpis", "operations-kpi-note", "flight-count",
         "flight-body", "status-filter", "baggage-count", "baggage-body",
         "baggage-status", "baggage-flight", "refresh-baggage", "passenger-note",
-        "passenger-grid", "passenger-detail", "manifest-count", "manifest-body",
+        "passenger-grid", "passenger-detail", "manifest-panel", "manifest-count", "manifest-body",
         "gate-count", "gate-body",
         "ground-count", "ground-body", "airport-count", "airport-summary",
         "airport-summary-code", "airport-search", "refresh-airports", "airport-body",
@@ -298,6 +298,9 @@ async function loadPassengerManifest(flight, force = true) {
     } finally {
         state.manifestLoading = false;
         renderManifest();
+        if (force && state.manifestFlightId) {
+            focusManifestPanel();
+        }
     }
 }
 
@@ -554,15 +557,18 @@ function renderFlights(flights) {
 
 function renderManifest() {
     if (!state.manifestFlightId) {
+        elements.manifestPanel?.classList.remove("has-manifest");
         elements.manifestCount.textContent = "Select a flight to see passengers";
         elements.manifestBody.innerHTML = tableMessageRow("No flight selected", "Use the Manifest button in the flight table.", 5);
         return;
     }
     if (state.manifestLoading) {
+        elements.manifestPanel?.classList.add("has-manifest");
         elements.manifestCount.textContent = `Loading ${state.manifestFlightNumber}`;
         elements.manifestBody.innerHTML = tableMessageRow("Loading passengers", "Fetching the flight manifest.", 5);
         return;
     }
+    elements.manifestPanel?.classList.add("has-manifest");
     elements.manifestCount.textContent = `${state.manifestFlightNumber}: ${number(state.manifest.length)} shown`;
     if (state.manifest.length === 0) {
         elements.manifestBody.innerHTML = tableMessageRow("No passengers found", "Reset or reseed the simulation.", 5);
@@ -577,6 +583,16 @@ function renderManifest() {
             <td>${escapeHtml(passenger.travelDocument || "--")}</td>
         </tr>
     `).join("");
+}
+
+function focusManifestPanel() {
+    if (!elements.manifestPanel) {
+        return;
+    }
+    window.setTimeout(() => {
+        elements.manifestPanel.scrollIntoView({behavior: "smooth", block: "start"});
+        elements.manifestPanel.focus({preventScroll: true});
+    }, 50);
 }
 
 async function applyFlightControl(container) {

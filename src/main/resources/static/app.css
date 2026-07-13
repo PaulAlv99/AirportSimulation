@@ -560,6 +560,13 @@ svg {
     margin-top: 0.75rem;
     border-top: 1px solid var(--line);
     background: var(--panel);
+    scroll-margin-top: 1rem;
+    outline: none;
+}
+
+.manifest-panel.has-manifest {
+    border-top-color: color-mix(in srgb, var(--accent) 72%, var(--line));
+    box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .data-table {
