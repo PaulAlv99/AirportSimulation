@@ -26,9 +26,13 @@
     <section class="control-strip">
         <div class="segmented" role="tablist" aria-label="Dashboard views">
             <button class="tab active" data-tab="overview" type="button"><i data-lucide="layout-dashboard"></i><span>Overview</span></button>
-            <button class="tab" data-tab="airports" type="button"><i data-lucide="tower-control"></i><span>Airports</span></button>
-            <button class="tab" data-tab="weather" type="button"><i data-lucide="cloud-sun"></i><span>Weather</span></button>
+            <button class="tab" data-tab="operations" type="button"><i data-lucide="activity"></i><span>Operations</span></button>
             <button class="tab" data-tab="flights" type="button"><i data-lucide="plane"></i><span>Flights</span></button>
+            <button class="tab" data-tab="baggage" type="button"><i data-lucide="briefcase"></i><span>Baggage</span></button>
+            <button class="tab" data-tab="passengers" type="button"><i data-lucide="users"></i><span>Passengers</span></button>
+            <button class="tab" data-tab="airside" type="button"><i data-lucide="tower-control"></i><span>Airside</span></button>
+            <button class="tab" data-tab="weather" type="button"><i data-lucide="cloud-sun"></i><span>Weather</span></button>
+            <button class="tab" data-tab="airports" type="button"><i data-lucide="map-pin"></i><span>Airports</span></button>
             <button class="tab" data-tab="data" type="button"><i data-lucide="database"></i><span>Data</span></button>
         </div>
 
@@ -62,14 +66,14 @@
                 <span id="sim-multiplier">--</span>
             </article>
             <article class="panel kpi">
+                <span class="label">Operations</span>
+                <strong id="ops-total">--</strong>
+                <span id="ops-flow">--</span>
+            </article>
+            <article class="panel kpi">
                 <span class="label">Weather Severity</span>
                 <strong id="weather-severity">--</strong>
                 <span id="weather-meta">--</span>
-            </article>
-            <article class="panel kpi">
-                <span class="label">Flight Flow</span>
-                <strong id="flight-total">--</strong>
-                <span id="flight-flow">--</span>
             </article>
         </div>
 
@@ -84,10 +88,10 @@
 
             <article class="panel">
                 <div class="panel-head">
-                    <h2>Weather Detail</h2>
-                    <span class="panel-note" id="weather-observed">--</span>
+                    <h2>Operation Detail</h2>
+                    <span class="panel-note" id="ops-profile">--</span>
                 </div>
-                <div class="detail-grid" id="weather-detail"></div>
+                <div class="detail-grid" id="operation-detail"></div>
             </article>
 
             <article class="panel panel-span">
@@ -96,6 +100,252 @@
                     <span class="panel-note" id="status-total">--</span>
                 </div>
                 <div class="status-grid" id="status-grid"></div>
+            </article>
+        </div>
+    </section>
+
+    <section class="dashboard" id="view-operations">
+        <div class="ops-layout">
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Queues</h2>
+                    <span class="panel-note" id="queue-note">Live resource pressure</span>
+                </div>
+                <div class="status-grid" id="queue-grid"></div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Disruptions</h2>
+                    <span class="panel-note">Applies immediately</span>
+                </div>
+                <form id="disruption-form" class="inline-form">
+                    <label>Type
+                        <select name="type">
+                            <option value="BAGGAGE_JAM">Baggage jam</option>
+                            <option value="STAFFING">Staffing shortage</option>
+                            <option value="RUNWAY_HOLD">Runway hold</option>
+                            <option value="GATE_CLOSE">Gate close</option>
+                            <option value="GATE_OPEN">Gate open</option>
+                        </select>
+                    </label>
+                    <label>Severity
+                        <input name="severity" type="number" min="1" max="5" value="2">
+                    </label>
+                    <label>Duration min
+                        <input name="durationMinutes" type="number" min="5" max="240" value="20">
+                    </label>
+                    <label>Gate
+                        <input name="gateCode" type="text" placeholder="A1">
+                    </label>
+                    <div class="form-actions">
+                        <button class="button primary" type="submit"><i data-lucide="zap"></i><span>Apply</span></button>
+                    </div>
+                </form>
+            </article>
+
+            <article class="panel panel-span">
+                <div class="panel-head">
+                    <h2>Operational KPIs</h2>
+                    <span class="panel-note" id="operations-kpi-note">--</span>
+                </div>
+                <div class="count-grid" id="operations-kpis"></div>
+            </article>
+        </div>
+    </section>
+
+    <section class="dashboard" id="view-flights">
+        <article class="panel">
+            <div class="panel-head stackable">
+                <div>
+                    <h2>Live Flights</h2>
+                    <span class="panel-note" id="flight-count">0 flights</span>
+                </div>
+                <div class="field-row compact">
+                    <select id="status-filter">
+                        <option value="ALL">All statuses</option>
+                    </select>
+                </div>
+            </div>
+            <div class="table-wrap tall">
+                <table class="data-table flights-table">
+                    <thead>
+                    <tr>
+                        <th>Flight</th>
+                        <th>Route</th>
+                        <th>Time</th>
+                        <th>Status</th>
+                        <th>Load</th>
+                        <th>Gate</th>
+                        <th>Control</th>
+                    </tr>
+                    </thead>
+                    <tbody id="flight-body"></tbody>
+                </table>
+            </div>
+        </article>
+    </section>
+
+    <section class="dashboard" id="view-baggage">
+        <article class="panel">
+            <div class="panel-head stackable">
+                <div>
+                    <h2>Baggage Flow</h2>
+                    <span class="panel-note" id="baggage-count">0 bags</span>
+                </div>
+                <div class="field-row compact">
+                    <select id="baggage-status">
+                        <option value="">All bag states</option>
+                        <option value="REGISTERED">Registered</option>
+                        <option value="SCREENED">Screened</option>
+                        <option value="LOADED">Loaded</option>
+                        <option value="IN_TRANSIT">In transit</option>
+                        <option value="DELIVERED">Delivered</option>
+                        <option value="DELAYED">Delayed</option>
+                        <option value="LOST">Lost</option>
+                    </select>
+                    <input id="baggage-flight" type="search" placeholder="Flight number or id">
+                    <button class="button" id="refresh-baggage" type="button"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
+                </div>
+            </div>
+            <div class="table-wrap tall">
+                <table class="data-table">
+                    <thead>
+                    <tr>
+                        <th>Tag</th>
+                        <th>Flight</th>
+                        <th>Status</th>
+                        <th>Belt</th>
+                        <th>Exception</th>
+                        <th>Updated</th>
+                    </tr>
+                    </thead>
+                    <tbody id="baggage-body"></tbody>
+                </table>
+            </div>
+        </article>
+    </section>
+
+    <section class="dashboard" id="view-passengers">
+        <div class="passenger-layout">
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Passenger Status</h2>
+                    <span class="panel-note" id="passenger-note">Generated from active flights</span>
+                </div>
+                <div class="status-grid" id="passenger-grid"></div>
+            </article>
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Processing Load</h2>
+                    <span class="panel-note">Check-in, security, boarding</span>
+                </div>
+                <div class="detail-grid" id="passenger-detail"></div>
+            </article>
+        </div>
+    </section>
+
+    <section class="dashboard" id="view-airside">
+        <div class="airside-layout">
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Gates</h2>
+                    <span class="panel-note" id="gate-count">0 gates</span>
+                </div>
+                <div class="table-wrap medium">
+                    <table class="data-table compact-table">
+                        <thead>
+                        <tr>
+                            <th>Gate</th>
+                            <th>State</th>
+                            <th>Flight</th>
+                            <th>Queues</th>
+                            <th></th>
+                        </tr>
+                        </thead>
+                        <tbody id="gate-body"></tbody>
+                    </table>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Ground Operations</h2>
+                    <span class="panel-note" id="ground-count">0 tasks</span>
+                </div>
+                <div class="table-wrap medium">
+                    <table class="data-table compact-table">
+                        <thead>
+                        <tr>
+                            <th>Task</th>
+                            <th>Flight</th>
+                            <th>Gate</th>
+                            <th>Status</th>
+                            <th>Due</th>
+                        </tr>
+                        </thead>
+                        <tbody id="ground-body"></tbody>
+                    </table>
+                </div>
+            </article>
+        </div>
+    </section>
+
+    <section class="dashboard" id="view-weather">
+        <div class="weather-layout">
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Current Weather</h2>
+                    <span class="panel-note" id="weather-source">Simulation snapshot</span>
+                </div>
+                <div class="weather-current" id="weather-current"></div>
+                <div class="button-row">
+                    <button class="button primary" id="fetch-weather" type="button"><i data-lucide="download-cloud"></i><span>Fetch Real Weather</span></button>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-head">
+                    <h2>Manual Weather</h2>
+                    <span class="panel-note">Applies immediately</span>
+                </div>
+                <form id="weather-form" class="weather-form">
+                    <label>Temperature C <input name="temperatureCelsius" type="number" step="0.1" required></label>
+                    <label>Feels Like C <input name="feelsLikeCelsius" type="number" step="0.1" required></label>
+                    <label>Wind km/h <input name="windSpeedKmh" type="number" min="0" step="0.1" required></label>
+                    <label>Gust km/h <input name="windGustKmh" type="number" min="0" step="0.1" required></label>
+                    <label>Wind Direction <input name="windDirectionDegrees" type="number" min="0" max="359" step="1" required></label>
+                    <label>Visibility m <input name="visibilityMeters" type="number" min="0" step="100" required></label>
+                    <label>Rain mm/h <input name="rainMmPerHour" type="number" min="0" step="0.1" required></label>
+                    <label>Snow mm/h <input name="snowMmPerHour" type="number" min="0" step="0.1" required></label>
+                    <label>Cloud Cover % <input name="cloudCoveragePercent" type="number" min="0" max="100" step="1" required></label>
+                    <label>Ceiling m <input name="ceilingMeters" type="number" min="0" step="100" required></label>
+                    <label>Cloud Label <input name="cloudLabel" type="text" required></label>
+                    <label>Runway Surface
+                        <select name="runwaySurface" required>
+                            <option value="DRY">DRY</option>
+                            <option value="WET">WET</option>
+                            <option value="CONTAMINATED">CONTAMINATED</option>
+                        </select>
+                    </label>
+                    <label>Severity
+                        <select name="severityCode" required>
+                            <option value="NORMAL">Normal</option>
+                            <option value="CAUTION">Caution</option>
+                            <option value="SEVERE">Severe</option>
+                            <option value="GROUND_STOP">Ground Stop</option>
+                        </select>
+                    </label>
+                    <div class="check-grid">
+                        <label><input name="fog" type="checkbox"> Fog</label>
+                        <label><input name="thunderstorm" type="checkbox"> Thunderstorm</label>
+                        <label><input name="hail" type="checkbox"> Hail</label>
+                    </div>
+                    <div class="form-actions">
+                        <button class="button" id="load-weather-form" type="button"><i data-lucide="copy-check"></i><span>Load Current</span></button>
+                        <button class="button primary" type="submit"><i data-lucide="cloud-upload"></i><span>Apply Weather</span></button>
+                    </div>
+                </form>
             </article>
         </div>
     </section>
@@ -143,124 +393,11 @@
         </div>
     </section>
 
-    <section class="dashboard" id="view-weather">
-        <div class="weather-layout">
-            <article class="panel">
-                <div class="panel-head">
-                    <h2>Current Weather</h2>
-                    <span class="panel-note" id="weather-source">Simulation snapshot</span>
-                </div>
-                <div class="weather-current" id="weather-current"></div>
-                <div class="button-row">
-                    <button class="button primary" id="fetch-weather" type="button"><i data-lucide="download-cloud"></i><span>Fetch Real Weather</span></button>
-                </div>
-            </article>
-
-            <article class="panel">
-                <div class="panel-head">
-                    <h2>Manual Weather</h2>
-                    <span class="panel-note">Applies immediately</span>
-                </div>
-                <form id="weather-form" class="weather-form">
-                    <label>Temperature C
-                        <input name="temperatureCelsius" type="number" step="0.1" required>
-                    </label>
-                    <label>Feels Like C
-                        <input name="feelsLikeCelsius" type="number" step="0.1" required>
-                    </label>
-                    <label>Wind km/h
-                        <input name="windSpeedKmh" type="number" min="0" step="0.1" required>
-                    </label>
-                    <label>Gust km/h
-                        <input name="windGustKmh" type="number" min="0" step="0.1" required>
-                    </label>
-                    <label>Wind Direction
-                        <input name="windDirectionDegrees" type="number" min="0" max="359" step="1" required>
-                    </label>
-                    <label>Visibility m
-                        <input name="visibilityMeters" type="number" min="0" step="100" required>
-                    </label>
-                    <label>Rain mm/h
-                        <input name="rainMmPerHour" type="number" min="0" step="0.1" required>
-                    </label>
-                    <label>Snow mm/h
-                        <input name="snowMmPerHour" type="number" min="0" step="0.1" required>
-                    </label>
-                    <label>Cloud Cover %
-                        <input name="cloudCoveragePercent" type="number" min="0" max="100" step="1" required>
-                    </label>
-                    <label>Ceiling m
-                        <input name="ceilingMeters" type="number" min="0" step="100" required>
-                    </label>
-                    <label>Cloud Label
-                        <input name="cloudLabel" type="text" required>
-                    </label>
-                    <label>Runway Surface
-                        <select name="runwaySurface" required>
-                            <option value="DRY">DRY</option>
-                            <option value="WET">WET</option>
-                            <option value="CONTAMINATED">CONTAMINATED</option>
-                        </select>
-                    </label>
-                    <label>Severity
-                        <select name="severityCode" required>
-                            <option value="NORMAL">Normal</option>
-                            <option value="CAUTION">Caution</option>
-                            <option value="SEVERE">Severe</option>
-                            <option value="GROUND_STOP">Ground Stop</option>
-                        </select>
-                    </label>
-                    <div class="check-grid">
-                        <label><input name="fog" type="checkbox"> Fog</label>
-                        <label><input name="thunderstorm" type="checkbox"> Thunderstorm</label>
-                        <label><input name="hail" type="checkbox"> Hail</label>
-                    </div>
-                    <div class="form-actions">
-                        <button class="button" id="load-weather-form" type="button"><i data-lucide="copy-check"></i><span>Load Current</span></button>
-                        <button class="button primary" type="submit"><i data-lucide="cloud-upload"></i><span>Apply Weather</span></button>
-                    </div>
-                </form>
-            </article>
-        </div>
-    </section>
-
-    <section class="dashboard" id="view-flights">
-        <article class="panel">
-            <div class="panel-head stackable">
-                <div>
-                    <h2>Live Flights</h2>
-                    <span class="panel-note" id="flight-count">0 flights</span>
-                </div>
-                <div class="field-row compact">
-                    <select id="status-filter">
-                        <option value="ALL">All statuses</option>
-                    </select>
-                </div>
-            </div>
-            <div class="table-wrap tall">
-                <table class="data-table">
-                    <thead>
-                    <tr>
-                        <th>Flight</th>
-                        <th>Route</th>
-                        <th>Departure</th>
-                        <th>Arrival</th>
-                        <th>Status</th>
-                        <th>Gate</th>
-                        <th>Delay</th>
-                    </tr>
-                    </thead>
-                    <tbody id="flight-body"></tbody>
-                </table>
-            </div>
-        </article>
-    </section>
-
     <section class="dashboard" id="view-data">
         <div class="data-layout">
             <article class="panel">
                 <div class="panel-head">
-                    <h2>Import Tables</h2>
+                    <h2>Import And Generated Tables</h2>
                     <span class="panel-note">PostgreSQL rows</span>
                 </div>
                 <div class="count-grid" id="count-grid"></div>

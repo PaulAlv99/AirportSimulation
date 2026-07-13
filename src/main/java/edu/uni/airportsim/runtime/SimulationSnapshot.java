@@ -11,6 +11,7 @@ public record SimulationSnapshot(
         AirportView airport,
         WeatherView weather,
         ImportCounts counts,
+        OperationSummary operations,
         List<FlightView> flights,
         List<EventView> events
 ) {

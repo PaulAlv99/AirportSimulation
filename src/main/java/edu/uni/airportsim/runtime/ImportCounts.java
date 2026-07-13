@@ -8,7 +8,14 @@ public record ImportCounts(
         long navaids,
         long weatherSnapshots,
         long flightTemplates,
+        long openFlightAirlines,
+        long openFlightRoutes,
+        long openFlightPlanes,
         long demoFlights,
+        long passengers,
+        long baggage,
+        long gates,
+        long groundOperations,
         long events
 ) {
 }

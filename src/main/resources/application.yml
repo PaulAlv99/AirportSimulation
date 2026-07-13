@@ -32,3 +32,8 @@ airport-simulation:
   tick-interval: ${AIRPORT_SIMULATION_TICK_INTERVAL:1s}
   demo-flight-count: ${AIRPORT_SIMULATION_DEMO_FLIGHT_COUNT:12}
   flight-seed-limit: ${AIRPORT_SIMULATION_FLIGHT_SEED_LIMIT:24}
+  traffic-profile: ${AIRPORT_SIMULATION_TRAFFIC_PROFILE:BUSY}
+  target-daily-flights: ${AIRPORT_SIMULATION_TARGET_DAILY_FLIGHTS:220}
+  passenger-load-factor: ${AIRPORT_SIMULATION_PASSENGER_LOAD_FACTOR:0.82}
+  bag-rate: ${AIRPORT_SIMULATION_BAG_RATE:0.72}
+  use-open-flights: ${AIRPORT_SIMULATION_USE_OPENFLIGHTS:true}

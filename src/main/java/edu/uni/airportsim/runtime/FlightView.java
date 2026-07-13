@@ -14,6 +14,13 @@ public record FlightView(
         int delayMinutes,
         String gate,
         String runway,
-        String weatherNotes
+        String weatherNotes,
+        String routeSource,
+        String aircraftCode,
+        String aircraftName,
+        int passengerCount,
+        int baggageCount,
+        String direction,
+        String delayReason
 ) {
 }

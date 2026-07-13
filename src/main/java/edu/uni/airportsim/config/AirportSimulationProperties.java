@@ -13,6 +13,11 @@ public class AirportSimulationProperties {
     private Duration tickInterval = Duration.ofSeconds(1);
     private int demoFlightCount = 12;
     private int flightSeedLimit = 24;
+    private String trafficProfile = "BUSY";
+    private int targetDailyFlights = 220;
+    private double passengerLoadFactor = 0.82;
+    private double bagRate = 0.72;
+    private boolean useOpenFlights = true;
 
     public Path getDataDir() {
         return dataDir;
@@ -60,6 +65,46 @@ public class AirportSimulationProperties {
 
     public void setFlightSeedLimit(int flightSeedLimit) {
         this.flightSeedLimit = flightSeedLimit;
+    }
+
+    public String getTrafficProfile() {
+        return trafficProfile;
+    }
+
+    public void setTrafficProfile(String trafficProfile) {
+        this.trafficProfile = trafficProfile;
+    }
+
+    public int getTargetDailyFlights() {
+        return targetDailyFlights;
+    }
+
+    public void setTargetDailyFlights(int targetDailyFlights) {
+        this.targetDailyFlights = targetDailyFlights;
+    }
+
+    public double getPassengerLoadFactor() {
+        return passengerLoadFactor;
+    }
+
+    public void setPassengerLoadFactor(double passengerLoadFactor) {
+        this.passengerLoadFactor = passengerLoadFactor;
+    }
+
+    public double getBagRate() {
+        return bagRate;
+    }
+
+    public void setBagRate(double bagRate) {
+        this.bagRate = bagRate;
+    }
+
+    public boolean isUseOpenFlights() {
+        return useOpenFlights;
+    }
+
+    public void setUseOpenFlights(boolean useOpenFlights) {
+        this.useOpenFlights = useOpenFlights;
     }
 
     public Path importDirectory() {

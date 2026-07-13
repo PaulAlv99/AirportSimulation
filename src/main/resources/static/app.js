@@ -1,6 +1,9 @@
 const state = {
     snapshot: null,
     airports: [],
+    baggage: [],
+    gates: [],
+    ground: [],
     activeTab: "overview",
     polling: false,
     weatherTouched: false,
@@ -8,12 +11,19 @@ const state = {
     airportsError: "",
     airportSearchQuery: "",
     airportSearchTimer: null,
-    airportSearchController: null
+    airportSearchController: null,
+    lastBaggageLoad: 0,
+    lastAirsideLoad: 0
 };
 
 const fmt = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "medium"
+});
+
+const timeFmt = new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit"
 });
 
 const elements = {};
@@ -25,22 +35,24 @@ document.addEventListener("DOMContentLoaded", () => {
     void refresh();
     void loadAirports();
     window.setInterval(refresh, 1000);
-    if (window.lucide) {
-        window.lucide.createIcons();
-    }
+    createIcons();
 });
 
 function bindElements() {
     for (const id of [
         "subtitle", "run-state", "clock", "airport-name", "airport-meta", "sim-time",
-        "sim-multiplier", "weather-severity", "weather-meta", "flight-total",
-        "flight-flow", "airport-position", "airport-detail", "weather-observed",
-        "weather-detail", "status-total", "status-grid", "airport-count",
-        "airport-summary", "airport-summary-code", "airport-search",
-        "refresh-airports", "airport-body", "weather-current", "weather-source",
-        "fetch-weather", "weather-form", "load-weather-form", "flight-count",
-        "flight-body", "status-filter", "count-grid", "events", "event-count",
-        "start-btn", "pause-btn", "reset-btn", "reseed-btn"
+        "sim-multiplier", "weather-severity", "weather-meta", "ops-total",
+        "ops-flow", "airport-position", "airport-detail", "operation-detail",
+        "ops-profile", "status-total", "status-grid", "queue-grid", "queue-note",
+        "disruption-form", "operations-kpis", "operations-kpi-note", "flight-count",
+        "flight-body", "status-filter", "baggage-count", "baggage-body",
+        "baggage-status", "baggage-flight", "refresh-baggage", "passenger-note",
+        "passenger-grid", "passenger-detail", "gate-count", "gate-body",
+        "ground-count", "ground-body", "airport-count", "airport-summary",
+        "airport-summary-code", "airport-search", "refresh-airports", "airport-body",
+        "weather-current", "weather-source", "fetch-weather", "weather-form",
+        "load-weather-form", "count-grid", "events", "event-count", "start-btn",
+        "pause-btn", "reset-btn", "reseed-btn"
     ]) {
         elements[toCamel(id)] = document.getElementById(id);
     }
@@ -59,14 +71,29 @@ function bindEvents() {
     elements.reseedBtn.addEventListener("click", async () => {
         await mutate("api/import/reseed");
         await loadAirports({force: true});
+        await loadActiveDetails(true);
     });
     elements.multiplierButtons.forEach((button) => {
         button.addEventListener("click", () => setMultiplier(button.dataset.multiplier));
     });
+    elements.disruptionForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = elements.disruptionForm;
+        await mutate("api/operations/disruption", {
+            type: form.elements.type.value,
+            severity: intValue(form.elements.severity),
+            durationMinutes: intValue(form.elements.durationMinutes),
+            gateCode: form.elements.gateCode.value.trim() || null
+        });
+        await loadActiveDetails(true);
+    });
+    elements.statusFilter.addEventListener("change", () => renderFlights(state.snapshot?.flights || []));
+    elements.baggageStatus.addEventListener("change", () => loadBaggage(true));
+    elements.baggageFlight.addEventListener("input", debounceBaggage);
+    elements.refreshBaggage.addEventListener("click", () => loadBaggage(true));
     elements.airportSearch.addEventListener("input", scheduleAirportSearch);
     elements.airportSearch.addEventListener("search", scheduleAirportSearch);
     elements.refreshAirports.addEventListener("click", () => loadAirports({force: true}));
-    elements.statusFilter.addEventListener("change", () => renderFlights(state.snapshot?.flights || []));
     elements.fetchWeather.addEventListener("click", async () => {
         state.weatherTouched = false;
         await mutate("api/weather/fetch", null, {expectJson: true});
@@ -83,6 +110,11 @@ function bindEvents() {
         state.weatherTouched = false;
         await mutate("api/weather/manual", weatherPayload(), {expectJson: true});
     });
+}
+
+function debounceBaggage() {
+    window.clearTimeout(state.baggageTimer);
+    state.baggageTimer = window.setTimeout(() => loadBaggage(true), 250);
 }
 
 function scheduleAirportSearch() {
@@ -155,10 +187,69 @@ async function refresh() {
         }
         state.snapshot = await response.json();
         render(state.snapshot);
+        await loadActiveDetails(false);
     } catch (error) {
         showMessage(error.message);
     } finally {
         state.polling = false;
+    }
+}
+
+async function loadActiveDetails(force) {
+    if (state.activeTab === "baggage") {
+        await loadBaggage(force);
+    }
+    if (state.activeTab === "airside") {
+        await loadAirside(force);
+    }
+}
+
+async function loadBaggage(force = false) {
+    const now = Date.now();
+    if (!force && now - state.lastBaggageLoad < 2500) {
+        return;
+    }
+    state.lastBaggageLoad = now;
+    const params = new URLSearchParams();
+    params.set("limit", "80");
+    if (elements.baggageStatus.value) {
+        params.set("status", elements.baggageStatus.value);
+    }
+    const flight = elements.baggageFlight.value.trim();
+    if (flight) {
+        params.set("flight", flight);
+    }
+    try {
+        const response = await fetch(`api/operations/baggage?${params.toString()}`, {headers: {"Accept": "application/json"}});
+        if (!response.ok) {
+            throw new Error(`Baggage request failed: ${response.status}`);
+        }
+        state.baggage = await response.json();
+        renderBaggage();
+    } catch (error) {
+        showMessage(error.message);
+    }
+}
+
+async function loadAirside(force = false) {
+    const now = Date.now();
+    if (!force && now - state.lastAirsideLoad < 2500) {
+        return;
+    }
+    state.lastAirsideLoad = now;
+    try {
+        const [gatesResponse, groundResponse] = await Promise.all([
+            fetch("api/operations/gates", {headers: {"Accept": "application/json"}}),
+            fetch("api/operations/ground", {headers: {"Accept": "application/json"}})
+        ]);
+        if (!gatesResponse.ok || !groundResponse.ok) {
+            throw new Error("Airside request failed");
+        }
+        state.gates = await gatesResponse.json();
+        state.ground = await groundResponse.json();
+        renderAirside();
+    } catch (error) {
+        showMessage(error.message);
     }
 }
 
@@ -183,12 +274,15 @@ async function mutate(path, body, options = {}) {
 }
 
 function render(snapshot) {
+    const operations = snapshot.operations || {};
     elements.clock.textContent = fmt.format(new Date());
-    elements.subtitle.textContent = `${number(snapshot.counts.airports)} airports, ${number(snapshot.flights.length)} active simulation flights, ${snapshot.airport?.code || "no airport"} selected.`;
+    elements.subtitle.textContent = `${number(snapshot.counts.airports)} airports, ${number(snapshot.flights.length)} flights, ${number(operations.passengersTotal)} passengers, ${number(operations.baggageTotal)} bags.`;
     elements.runState.textContent = snapshot.running ? "Running" : "Paused";
     elements.runState.className = `live-chip ${snapshot.running ? "running" : "paused"}`;
 
     renderOverview(snapshot);
+    renderOperations(snapshot);
+    renderPassengerDashboard(operations);
     renderAirportSummary(snapshot);
     renderWeather(snapshot.weather, snapshot.airport);
     highlightMultiplier(snapshot.multiplier);
@@ -200,14 +294,13 @@ function render(snapshot) {
     if (!state.weatherTouched) {
         fillWeatherForm(snapshot.weather);
     }
-    if (window.lucide) {
-        window.lucide.createIcons();
-    }
+    createIcons();
 }
 
 function renderOverview(snapshot) {
     const airport = snapshot.airport;
     const weather = snapshot.weather;
+    const operations = snapshot.operations || {};
     const statusCounts = groupBy(snapshot.flights, (flight) => flight.status);
 
     elements.airportName.textContent = airport?.name || "No airport";
@@ -220,12 +313,12 @@ function renderOverview(snapshot) {
     elements.weatherMeta.textContent = weather
         ? `${weather.temperatureCelsius.toFixed(1)} C | wind ${weather.windSpeedKmh.toFixed(0)} km/h | visibility ${number(weather.visibilityMeters)} m`
         : "--";
-    elements.flightTotal.textContent = `${number(snapshot.flights.length)} flights`;
-    elements.flightFlow.textContent = flightFlowText(statusCounts);
+    elements.opsTotal.textContent = `${number(operations.totalFlights)} flights`;
+    elements.opsFlow.textContent = `${number(operations.activeFlights)} active | ${number(operations.delayedFlights)} delayed | ${number(operations.gateUtilizationPercent)}% gates`;
     elements.airportPosition.textContent = airport?.latitude != null
         ? `${airport.latitude.toFixed(4)}, ${airport.longitude.toFixed(4)}`
         : "No coordinates";
-    elements.weatherObserved.textContent = weather ? formatDate(weather.observedAt) : "--";
+    elements.opsProfile.textContent = `${operations.trafficProfile || "BUSY"} | target ${number(operations.targetDailyFlights)}`;
 
     elements.airportDetail.innerHTML = detailItems([
         ["Code", airport?.code],
@@ -236,26 +329,63 @@ function renderOverview(snapshot) {
         ["Latitude", airport?.latitude?.toFixed(5)],
         ["Longitude", airport?.longitude?.toFixed(5)]
     ]);
-    elements.weatherDetail.innerHTML = detailItems([
-        ["Temperature", `${weather?.temperatureCelsius?.toFixed(1) ?? "--"} C`],
-        ["Feels Like", `${weather?.feelsLikeCelsius?.toFixed(1) ?? "--"} C`],
-        ["Wind", `${weather?.windSpeedKmh?.toFixed(1) ?? "--"} km/h`],
-        ["Gust", `${weather?.windGustKmh?.toFixed(1) ?? "--"} km/h`],
-        ["Direction", `${weather?.windDirectionDegrees ?? "--"} deg`],
-        ["Rain", `${weather?.rainMmPerHour?.toFixed(1) ?? "--"} mm/h`],
-        ["Snow", `${weather?.snowMmPerHour?.toFixed(1) ?? "--"} mm/h`],
-        ["Clouds", `${weather?.cloudCoveragePercent ?? "--"}%`],
-        ["Ceiling", `${number(weather?.ceilingMeters)} m`],
-        ["Runway", weather?.runwaySurface]
+    elements.operationDetail.innerHTML = detailItems([
+        ["Passengers", number(operations.passengersTotal)],
+        ["Baggage", number(operations.baggageTotal)],
+        ["Gate Utilization", `${number(operations.gateUtilizationPercent)}%`],
+        ["Runway Queue", number(operations.runwayQueue)],
+        ["Baggage Backlog", number(operations.baggageBacklog)],
+        ["Delayed Ground Tasks", number(operations.delayedGroundOps)]
     ]);
 
     elements.statusTotal.textContent = `${number(snapshot.flights.length)} flights`;
-    elements.statusGrid.innerHTML = Object.entries(statusCounts).map(([status, count]) => `
-        <div class="status-card">
-            <span class="status ${statusClass(status)}">${escapeHtml(status)}</span>
-            <strong>${number(count)}</strong>
-        </div>
-    `).join("");
+    elements.statusGrid.innerHTML = Object.entries(statusCounts).map(([status, count]) => statusCard(status, count)).join("");
+}
+
+function renderOperations(snapshot) {
+    const operations = snapshot.operations || {};
+    elements.queueGrid.innerHTML = [
+        ["Runway", operations.runwayQueue],
+        ["Check-in", operations.checkInQueue],
+        ["Security", operations.securityQueue],
+        ["Baggage", operations.baggageBacklog],
+        ["Ground Active", operations.activeGroundOps],
+        ["Ground Delayed", operations.delayedGroundOps]
+    ].map(([label, value]) => statusCard(label, value)).join("");
+    elements.operationsKpiNote.textContent = `${operations.trafficProfile || "BUSY"} profile`;
+    elements.operationsKpis.innerHTML = countItems([
+        ["Target Flights", operations.targetDailyFlights],
+        ["Active Flights", operations.activeFlights],
+        ["Delayed Flights", operations.delayedFlights],
+        ["Passengers", operations.passengersTotal],
+        ["Checked In", operations.passengersCheckedIn],
+        ["Security Cleared", operations.passengersSecurityCleared],
+        ["Boarded", operations.passengersBoarded],
+        ["Bags Loaded", operations.bagsLoaded],
+        ["Bags Delivered", operations.bagsDelivered],
+        ["Delayed Bags", operations.bagsDelayed],
+        ["Open Gates", operations.gatesOpen],
+        ["Occupied Gates", operations.gatesOccupied]
+    ]);
+}
+
+function renderPassengerDashboard(operations) {
+    elements.passengerGrid.innerHTML = [
+        ["Total", operations.passengersTotal],
+        ["Checked In", operations.passengersCheckedIn],
+        ["Security", operations.passengersSecurityCleared],
+        ["Boarded", operations.passengersBoarded],
+        ["Missed", operations.passengersMissedConnections],
+        ["Check-in Queue", operations.checkInQueue]
+    ].map(([label, value]) => statusCard(label, value)).join("");
+    elements.passengerDetail.innerHTML = detailItems([
+        ["Load Factor", operations.passengerLoadFactor],
+        ["Bag Rate", operations.bagRate],
+        ["Security Queue", number(operations.securityQueue)],
+        ["Runway Queue", number(operations.runwayQueue)],
+        ["Active Ground Ops", number(operations.activeGroundOps)],
+        ["Delayed Ground Ops", number(operations.delayedGroundOps)]
+    ]);
 }
 
 function renderAirportSummary(snapshot) {
@@ -275,33 +405,21 @@ function renderAirportSummary(snapshot) {
 function renderAirports() {
     const activeCode = state.snapshot?.airport?.code;
     if (state.airportsLoading) {
-        elements.airportCount.textContent = state.airportSearchQuery
-            ? `Loading matches for "${state.airportSearchQuery}"`
-            : "Loading airports";
-        elements.airportBody.innerHTML = tableMessageRow("Loading airports", "Fetching imported airport data");
+        elements.airportCount.textContent = state.airportSearchQuery ? `Loading ${state.airportSearchQuery}` : "Loading airports";
+        elements.airportBody.innerHTML = tableMessageRow("Loading airports", "Fetching imported airport data", 6);
         return;
     }
     if (state.airportsError) {
         elements.airportCount.textContent = "Airport data unavailable";
-        elements.airportBody.innerHTML = tableMessageRow("Airport list unavailable", state.airportsError);
+        elements.airportBody.innerHTML = tableMessageRow("Airport list unavailable", state.airportsError, 6);
         return;
     }
-
     const airports = state.airports;
-    const queryLabel = state.airportSearchQuery
-        ? `matches for "${state.airportSearchQuery}"`
-        : `top ${number(airports.length)} airports`;
-    elements.airportCount.textContent = state.airportSearchQuery
-        ? `${number(airports.length)} airport${airports.length === 1 ? "" : "s"} ${queryLabel}`
-        : `Showing ${queryLabel}`;
+    elements.airportCount.textContent = `${number(airports.length)} airports`;
     if (airports.length === 0) {
-        elements.airportBody.innerHTML = tableMessageRow(
-            state.airportSearchQuery ? `No airports match "${state.airportSearchQuery}"` : "No airports imported",
-            state.airportSearchQuery ? "Try a broader search term" : "Load import data to populate the selector"
-        );
+        elements.airportBody.innerHTML = tableMessageRow("No airports found", "Try another search", 6);
         return;
     }
-
     elements.airportBody.innerHTML = airports.map((airport) => `
         <tr class="${airport.code === activeCode ? "selected-row" : ""}">
             <td><strong>${escapeHtml(airport.name)}</strong><div class="stat-subtle">${escapeHtml(airport.code)} ${airport.ident ? "| " + escapeHtml(airport.ident) : ""}</div></td>
@@ -313,7 +431,10 @@ function renderAirports() {
         </tr>
     `).join("");
     elements.airportBody.querySelectorAll("[data-airport-code]").forEach((button) => {
-        button.addEventListener("click", () => mutate("api/airport/select", {code: button.dataset.airportCode}));
+        button.addEventListener("click", async () => {
+            await mutate("api/airport/select", {code: button.dataset.airportCode});
+            await loadActiveDetails(true);
+        });
     });
 }
 
@@ -325,7 +446,7 @@ function renderWeather(weather, airport) {
     }
     elements.weatherSource.textContent = airport ? `Weather for ${airport.code}` : "Simulation snapshot";
     elements.weatherCurrent.innerHTML = `
-        <div class="weather-severity ${weather.severityCode.toLowerCase()}">${escapeHtml(weather.severityLabel)}</div>
+        <div class="weather-severity ${statusClass(weather.severityCode)}">${escapeHtml(weather.severityLabel)}</div>
         <div class="weather-metrics">
             ${metric("Temp", `${weather.temperatureCelsius.toFixed(1)} C`)}
             ${metric("Feels", `${weather.feelsLikeCelsius.toFixed(1)} C`)}
@@ -344,41 +465,130 @@ function renderWeather(weather, airport) {
 function renderFlights(flights) {
     updateStatusFilter(flights);
     const status = elements.statusFilter.value;
-    const visibleFlights = status === "ALL"
-        ? flights
-        : flights.filter((flight) => flight.status === status);
+    const visibleFlights = status === "ALL" ? flights : flights.filter((flight) => flight.status === status);
     elements.flightCount.textContent = `${number(visibleFlights.length)} of ${number(flights.length)} flights`;
     elements.flightBody.innerHTML = visibleFlights.map((flight) => `
         <tr>
-            <td><strong>${escapeHtml(flight.flightNumber)}</strong><div class="stat-subtle">${escapeHtml(flight.airline)}</div></td>
-            <td>${escapeHtml(flight.originLabel)}<br><span class="stat-subtle">to ${escapeHtml(flight.destinationLabel)}</span></td>
-            <td>${formatDate(flight.departureTime)}</td>
-            <td>${formatDate(flight.arrivalTime)}</td>
-            <td><span class="status ${statusClass(flight.status)}">${escapeHtml(flight.status)}</span></td>
+            <td><strong>${escapeHtml(flight.flightNumber)}</strong><div class="stat-subtle">${escapeHtml(flight.airline)}</div><div class="stat-subtle">${escapeHtml(flight.aircraftCode || "--")} ${escapeHtml(flight.aircraftName || "")}</div></td>
+            <td>${escapeHtml(flight.originLabel)}<br><span class="stat-subtle">to ${escapeHtml(flight.destinationLabel)}</span><div class="stat-subtle">${escapeHtml(flight.direction || "")} | ${escapeHtml(flight.routeSource || "")}</div></td>
+            <td>${formatTime(flight.departureTime)}<div class="stat-subtle">arr ${formatTime(flight.arrivalTime)}</div></td>
+            <td><span class="status ${statusClass(flight.status)}">${escapeHtml(flight.status)}</span>${flight.delayReason ? `<div class="stat-subtle">${escapeHtml(flight.delayReason)}</div>` : ""}</td>
+            <td>${number(flight.passengerCount)} pax<div class="stat-subtle">${number(flight.baggageCount)} bags</div></td>
             <td>${escapeHtml(flight.gate || "--")}<div class="stat-subtle">${escapeHtml(flight.runway || "")}</div></td>
-            <td>${flight.delayMinutes ? `${flight.delayMinutes} min` : "--"}${flight.weatherNotes ? `<div class="stat-subtle">${escapeHtml(flight.weatherNotes)}</div>` : ""}</td>
+            <td>
+                <div class="control-cell" data-flight-control="${flight.id}">
+                    <select data-flight-status>
+                        ${flightStatusOptions(flight.status)}
+                    </select>
+                    <input data-flight-delay type="number" min="0" max="720" value="${flight.delayMinutes || 0}" title="Delay minutes">
+                    <input data-flight-reason type="text" value="${escapeHtml(flight.delayReason || "")}" placeholder="Reason">
+                    <button class="icon-button primary" data-flight-apply type="button" title="Apply flight control"><i data-lucide="check"></i></button>
+                    <button class="icon-button danger" data-flight-cancel type="button" title="Cancel flight"><i data-lucide="ban"></i></button>
+                </div>
+            </td>
+        </tr>
+    `).join("");
+    elements.flightBody.querySelectorAll("[data-flight-apply]").forEach((button) => {
+        button.addEventListener("click", () => applyFlightControl(button.closest("[data-flight-control]")));
+    });
+    elements.flightBody.querySelectorAll("[data-flight-cancel]").forEach((button) => {
+        button.addEventListener("click", () => cancelFlight(button.closest("[data-flight-control]")));
+    });
+    createIcons();
+}
+
+async function applyFlightControl(container) {
+    await mutate(`api/flights/${container.dataset.flightControl}/control`, {
+        status: container.querySelector("[data-flight-status]").value,
+        delayMinutes: intValue(container.querySelector("[data-flight-delay]")),
+        reason: container.querySelector("[data-flight-reason]").value.trim() || "Manual operations control"
+    });
+}
+
+async function cancelFlight(container) {
+    await mutate(`api/flights/${container.dataset.flightControl}/control`, {
+        status: "CANCELLED",
+        delayMinutes: intValue(container.querySelector("[data-flight-delay]")),
+        reason: "Cancelled by operations control"
+    });
+}
+
+function renderBaggage() {
+    elements.baggageCount.textContent = `${number(state.baggage.length)} shown`;
+    if (state.baggage.length === 0) {
+        elements.baggageBody.innerHTML = tableMessageRow("No bags match", "Change the filters or refresh", 6);
+        return;
+    }
+    elements.baggageBody.innerHTML = state.baggage.map((bag) => `
+        <tr>
+            <td><strong>${escapeHtml(bag.tag)}</strong><div class="stat-subtle">ID ${bag.id}</div></td>
+            <td>${escapeHtml(bag.flightNumber)}<div class="stat-subtle">Flight ${bag.flightId}</div></td>
+            <td><span class="status ${statusClass(bag.status)}">${escapeHtml(bag.status)}</span></td>
+            <td>${escapeHtml(bag.belt || "--")}</td>
+            <td>${escapeHtml(bag.exceptionReason || "--")}</td>
+            <td>${formatDate(bag.lastUpdated)}</td>
         </tr>
     `).join("");
 }
 
+function renderAirside() {
+    elements.gateCount.textContent = `${number(state.gates.length)} gates`;
+    elements.gateBody.innerHTML = state.gates.length === 0
+        ? tableMessageRow("No gates loaded", "Reset or reseed the simulation", 5)
+        : state.gates.map((gate) => `
+            <tr>
+                <td><strong>${escapeHtml(gate.gateCode)}</strong><div class="stat-subtle">${escapeHtml(gate.terminal)}</div></td>
+                <td><span class="status ${statusClass(gate.state)}">${escapeHtml(gate.open ? gate.state : "CLOSED")}</span></td>
+                <td>${escapeHtml(gate.flightNumber || "--")}</td>
+                <td>${number(gate.passengerQueue)} pax<div class="stat-subtle">${number(gate.baggageQueue)} bags</div></td>
+                <td><button class="button small" data-gate-toggle="${escapeHtml(gate.gateCode)}" data-gate-open="${gate.open ? "false" : "true"}" type="button">${gate.open ? "Close" : "Open"}</button></td>
+            </tr>
+        `).join("");
+    elements.gateBody.querySelectorAll("[data-gate-toggle]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            await mutate("api/operations/disruption", {
+                type: button.dataset.gateOpen === "true" ? "GATE_OPEN" : "GATE_CLOSE",
+                severity: 2,
+                durationMinutes: 20,
+                gateCode: button.dataset.gateToggle
+            });
+            await loadAirside(true);
+        });
+    });
+
+    elements.groundCount.textContent = `${number(state.ground.length)} tasks`;
+    elements.groundBody.innerHTML = state.ground.length === 0
+        ? tableMessageRow("No ground tasks", "Reset or reseed the simulation", 5)
+        : state.ground.map((task) => `
+            <tr>
+                <td><strong>${escapeHtml(task.operationType)}</strong><div class="stat-subtle">Delay ${number(task.delayMinutes)} min</div></td>
+                <td>${escapeHtml(task.flightNumber || "--")}</td>
+                <td>${escapeHtml(task.gateCode || "--")}</td>
+                <td><span class="status ${statusClass(task.status)}">${escapeHtml(task.status)}</span></td>
+                <td>${formatTime(task.dueAt)}</td>
+            </tr>
+        `).join("");
+}
+
 function renderCounts(counts) {
-    const items = [
+    elements.countGrid.innerHTML = countItems([
         ["Countries", counts.countries],
         ["Regions", counts.regions],
         ["Airports", counts.airports],
         ["Runways", counts.runways],
         ["Navaids", counts.navaids],
         ["Weather Snapshots", counts.weatherSnapshots],
-        ["Flight Templates", counts.flightTemplates],
+        ["Fare Templates", counts.flightTemplates],
+        ["OpenFlights Airlines", counts.openFlightAirlines],
+        ["OpenFlights Routes", counts.openFlightRoutes],
+        ["OpenFlights Planes", counts.openFlightPlanes],
         ["Simulation Flights", counts.demoFlights],
+        ["Passengers", counts.passengers],
+        ["Baggage", counts.baggage],
+        ["Gates", counts.gates],
+        ["Ground Ops", counts.groundOperations],
         ["Events", counts.events]
-    ];
-    elements.countGrid.innerHTML = items.map(([label, value]) => `
-        <div class="count-card">
-            <span>${label}</span>
-            <strong>${number(value)}</strong>
-        </div>
-    `).join("");
+    ]);
 }
 
 function renderEvents(events) {
@@ -450,6 +660,7 @@ function setTab(tabName) {
     if (tabName === "airports" && !state.airportsLoading && state.airports.length === 0 && !state.airportsError) {
         void loadAirports();
     }
+    void loadActiveDetails(true);
 }
 
 function highlightMultiplier(multiplier) {
@@ -469,10 +680,34 @@ function updateStatusFilter(flights) {
     elements.statusFilter.value = statuses.includes(current) ? current : "ALL";
 }
 
-function tableMessageRow(title, message) {
+function flightStatusOptions(current) {
+    return ["SCHEDULED", "CHECK_IN_OPEN", "BOARDING", "DELAYED", "DEPARTED", "ARRIVED", "CANCELLED"]
+        .map((status) => `<option value="${status}" ${status === current ? "selected" : ""}>${status}</option>`)
+        .join("");
+}
+
+function countItems(items) {
+    return items.map(([label, value]) => `
+        <div class="count-card">
+            <span>${escapeHtml(label)}</span>
+            <strong>${number(value)}</strong>
+        </div>
+    `).join("");
+}
+
+function statusCard(label, value) {
+    return `
+        <div class="status-card">
+            <span class="status ${statusClass(label)}">${escapeHtml(label)}</span>
+            <strong>${number(value)}</strong>
+        </div>
+    `;
+}
+
+function tableMessageRow(title, message, columns) {
     return `
         <tr>
-            <td class="table-state" colspan="6">
+            <td class="table-state" colspan="${columns}">
                 <strong>${escapeHtml(title)}</strong>
                 <span>${escapeHtml(message)}</span>
             </td>
@@ -501,19 +736,16 @@ function groupBy(items, keyFn) {
     }, {});
 }
 
-function flightFlowText(statusCounts) {
-    const departed = statusCounts.DEPARTED || 0;
-    const boarding = statusCounts.BOARDING || 0;
-    const delayed = statusCounts.DELAYED || 0;
-    return `${departed} departed | ${boarding} boarding | ${delayed} delayed`;
-}
-
 function statusClass(status) {
     return `status-${String(status || "scheduled").toLowerCase().replaceAll("_", "-")}`;
 }
 
 function formatDate(value) {
     return value ? fmt.format(new Date(value)) : "--";
+}
+
+function formatTime(value) {
+    return value ? timeFmt.format(new Date(value)) : "--";
 }
 
 function number(value) {
@@ -551,4 +783,10 @@ function escapeHtml(value) {
         .replaceAll(">", "&gt;")
         .replaceAll("\"", "&quot;")
         .replaceAll("'", "&#39;");
+}
+
+function createIcons() {
+    if (window.lucide) {
+        window.lucide.createIcons();
+    }
 }

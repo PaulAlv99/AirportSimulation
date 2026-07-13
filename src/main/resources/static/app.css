@@ -423,10 +423,19 @@ svg {
 }
 
 .weather-layout,
-.data-layout {
+.data-layout,
+.ops-layout,
+.passenger-layout,
+.airside-layout {
     display: grid;
     grid-template-columns: minmax(320px, 0.75fr) minmax(0, 1.25fr);
     gap: 0.75rem;
+}
+
+.ops-layout,
+.passenger-layout,
+.airside-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .weather-current {
@@ -445,13 +454,16 @@ svg {
     color: var(--good);
 }
 
-.weather-severity.caution {
+.weather-severity.caution,
+.weather-severity.status-caution {
     background: rgba(180, 83, 9, 0.12);
     color: var(--warn);
 }
 
 .weather-severity.severe,
-.weather-severity.ground_stop {
+.weather-severity.ground_stop,
+.weather-severity.status-severe,
+.weather-severity.status-ground-stop {
     background: rgba(185, 28, 28, 0.12);
     color: var(--bad);
 }
@@ -478,7 +490,16 @@ svg {
     padding: 1rem;
 }
 
-.weather-form label {
+.inline-form {
+    display: grid;
+    grid-template-columns: minmax(160px, 1.2fr) repeat(3, minmax(110px, 0.7fr));
+    gap: 0.75rem;
+    padding: 1rem;
+    align-items: end;
+}
+
+.weather-form label,
+.inline-form label {
     display: grid;
     gap: 0.35rem;
     color: var(--muted);
@@ -486,7 +507,9 @@ svg {
 }
 
 .weather-form label input,
-.weather-form label select {
+.weather-form label select,
+.inline-form label input,
+.inline-form label select {
     width: 100%;
     color: var(--ink);
 }
@@ -525,6 +548,10 @@ svg {
     max-height: min(72vh, 760px);
 }
 
+.table-wrap.medium {
+    max-height: min(64vh, 680px);
+}
+
 .data-table {
     width: 100%;
     min-width: 860px;
@@ -538,6 +565,14 @@ svg {
     border-bottom: 1px solid var(--line);
     text-align: left;
     vertical-align: top;
+}
+
+.data-table.compact-table {
+    min-width: 680px;
+}
+
+.data-table.flights-table {
+    min-width: 1180px;
 }
 
 .data-table th {
@@ -604,6 +639,55 @@ svg {
     color: var(--warn);
 }
 
+.status-cancelled,
+.status-lost,
+.status-closed,
+.status-ground-stop {
+    background: rgba(185, 28, 28, 0.12);
+    color: var(--bad);
+}
+
+.status-active,
+.status-occupied,
+.status-turnaround,
+.status-loaded,
+.status-in-transit,
+.status-checked-in,
+.status-security {
+    background: rgba(29, 78, 216, 0.1);
+    color: var(--blue);
+}
+
+.status-delivered,
+.status-available,
+.status-completed,
+.status-normal {
+    background: rgba(22, 101, 52, 0.1);
+    color: var(--good);
+}
+
+.status-registered,
+.status-screened,
+.status-pending,
+.status-waiting,
+.status-busy {
+    background: rgba(180, 83, 9, 0.12);
+    color: var(--warn);
+}
+
+.control-cell {
+    display: grid;
+    grid-template-columns: minmax(130px, 1fr) 76px minmax(150px, 1.4fr) 38px 38px;
+    gap: 0.35rem;
+    align-items: center;
+    min-width: 420px;
+}
+
+.control-cell select,
+.control-cell input {
+    width: 100%;
+}
+
 .events {
     display: grid;
     gap: 0.55rem;
@@ -638,7 +722,10 @@ svg {
     .kpi-grid,
     .overview-grid,
     .weather-layout,
-    .data-layout {
+    .data-layout,
+    .ops-layout,
+    .passenger-layout,
+    .airside-layout {
         grid-template-columns: 1fr;
     }
 
@@ -698,11 +785,21 @@ svg {
     .status-grid,
     .count-grid,
     .weather-metrics,
-    .weather-form {
+    .weather-form,
+    .inline-form {
         grid-template-columns: 1fr;
     }
 
     .data-table {
         min-width: 760px;
+    }
+
+    .data-table.flights-table {
+        min-width: 1040px;
+    }
+
+    .control-cell {
+        min-width: 360px;
+        grid-template-columns: minmax(120px, 1fr) 68px minmax(120px, 1fr) 36px 36px;
     }
 }

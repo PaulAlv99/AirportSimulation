@@ -5,9 +5,11 @@ Airport Simulation is now a Spring Boot web app with a live dashboard backed by 
 ## What it does
 
 - imports CSV data from `data/import/`
+- imports OpenFlights route, airline, and aircraft templates from `data/import/openflights/`
 - seeds PostgreSQL through Flyway and a startup bootstrapper
 - runs the simulation independently on a scheduler
-- exposes a browser dashboard at `/airport-simulation/`
+- exposes a browser operations dashboard at `/airport-simulation/`
+- generates route-aware flights, passengers, baggage, gates, ground tasks, and queues
 - keeps logs under `logs/` and save files under `saves/`
 
 ## Stack
@@ -29,8 +31,18 @@ The app reads these files from `data/import/`:
 - `navaids.csv`
 - `airlines_flights_data.csv`
 - `weather.csv` if present
+- `openflights/routes.dat`
+- `openflights/airlines.dat`
+- `openflights/planes.dat`
 
 If `weather.csv` is missing, the app creates a demo weather snapshot automatically so the dashboard still shows live conditions.
+
+OpenFlights data is used as historical route-template data, not live schedule truth. See `data/import/openflights/README.md`.
+To refresh those files manually, run:
+
+```powershell
+.\scripts\download-openflights.ps1 -Apply
+```
 
 ## Run locally
 
@@ -59,6 +71,14 @@ docker compose up --build
 
 The compose stack starts PostgreSQL and the app together. It is meant to sit behind a shared reverse proxy on the external `proxy` network, so the app container only exposes port `8080` internally. The application expects its data mount at `/app/data`, so the repository `data/` directory is mounted into the container.
 Set `AIRPORT_SIMULATION_DEFAULT_AIRPORT_CODE` if you want a different default airport than the bundled `LIS`.
+
+Useful runtime variables:
+
+- `AIRPORT_SIMULATION_TRAFFIC_PROFILE=BUSY`
+- `AIRPORT_SIMULATION_TARGET_DAILY_FLIGHTS=220`
+- `AIRPORT_SIMULATION_PASSENGER_LOAD_FACTOR=0.82`
+- `AIRPORT_SIMULATION_BAG_RATE=0.72`
+- `AIRPORT_SIMULATION_USE_OPENFLIGHTS=true`
 
 ## Notes
 

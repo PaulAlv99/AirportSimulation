@@ -62,6 +62,7 @@ class SimulationApiIT {
                     id,ident,type,name,latitude_deg,longitude_deg,elevation_ft,continent,iso_country,iso_region,municipality,scheduled_service,gps_code,iata_code,local_code,extra_1,extra_2,extra_3
                     1,TEST,small_airport,Test Airport,38.7223,-9.1393,114,EU,PT,PT-11,Lisbon,yes,TEST,TST,TST,,,
                     2,PORTO,medium_airport,Porto Airport,41.2481,-8.6814,228,EU,PT,PT-13,Porto,yes,PORTO,OPO,OPO,,,
+                    3,FUNCHAL,medium_airport,Madeira Airport,32.6979,-16.7745,192,EU,PT,PT-30,Funchal,yes,FUNCHAL,FNC,FNC,,,
                     """);
             write(importDir.resolve("runways.csv"), """
                     id,airport_ref,airport_ident,length_ft,width_ft,surface,lighted,closed,le_ident
@@ -78,6 +79,22 @@ class SimulationApiIT {
                     2,TAP Air Portugal,TP200,Porto,Evening,zero,Night,Lisbon,Economy,1.0,1,90
                     3,Azores Airlines,S4123,Lisbon,Night,zero,Morning,Funchal,Business,2.5,2,210
                     """);
+            Path openFlightsDir = importDir.resolve("openflights");
+            Files.createDirectories(openFlightsDir);
+            write(openFlightsDir.resolve("airlines.dat"), """
+                    123,"TAP Air Portugal",\\N,"TP","TAP","AIR PORTUGAL","Portugal","Y"
+                    456,"Azores Airlines",\\N,"S4","RZO","AIR AZORES","Portugal","Y"
+                    """);
+            write(openFlightsDir.resolve("planes.dat"), """
+                    "Airbus A320","320","A320"
+                    "ATR 72","AT7","AT72"
+                    """);
+            write(openFlightsDir.resolve("routes.dat"), """
+                    TP,123,TST,1001,OPO,1002,,0,320
+                    TP,123,OPO,1002,TST,1001,,0,320
+                    S4,456,TST,1001,FNC,1003,,0,AT7
+                    S4,456,FNC,1003,TST,1001,,0,AT7
+                    """);
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to create test import files", exception);
         }
@@ -92,6 +109,10 @@ class SimulationApiIT {
         registry.add("airport-simulation.default-airport-code", () -> "TST");
         registry.add("airport-simulation.flight-seed-limit", () -> 3);
         registry.add("airport-simulation.demo-flight-count", () -> 3);
+        registry.add("airport-simulation.target-daily-flights", () -> 6);
+        registry.add("airport-simulation.passenger-load-factor", () -> 0.8);
+        registry.add("airport-simulation.bag-rate", () -> 0.7);
+        registry.add("airport-simulation.use-open-flights", () -> true);
         registry.add("airport-simulation.tick-interval", () -> "1h");
         registry.add("server.servlet.context-path", () -> "/airport-simulation");
     }
@@ -101,9 +122,15 @@ class SimulationApiIT {
         JsonNode snapshot = snapshot();
         assertThat(snapshot.path("running").asBoolean()).isTrue();
         assertThat(snapshot.path("airport").path("code").asText()).isEqualTo("TST");
-        assertThat(snapshot.path("counts").path("airports").asLong()).isEqualTo(2L);
-        assertThat(snapshot.path("counts").path("demoFlights").asLong()).isEqualTo(3L);
-        assertThat(snapshot.path("flights")).hasSize(3);
+        assertThat(snapshot.path("counts").path("airports").asLong()).isEqualTo(3L);
+        assertThat(snapshot.path("counts").path("openFlightRoutes").asLong()).isEqualTo(4L);
+        assertThat(snapshot.path("counts").path("demoFlights").asLong()).isEqualTo(6L);
+        assertThat(snapshot.path("counts").path("baggage").asLong()).isGreaterThan(0L);
+        assertThat(snapshot.path("flights")).hasSize(6);
+        assertThat(snapshot.path("operations").path("targetDailyFlights").asInt()).isEqualTo(6);
+        assertThat(snapshot.path("operations").path("passengersTotal").asLong()).isGreaterThan(0L);
+        assertThat(snapshot.path("operations").path("baggageTotal").asLong()).isGreaterThan(0L);
+        assertThat(snapshot.path("operations").path("gatesTotal").asLong()).isGreaterThan(0L);
 
         ResponseEntity<String> airports = restTemplate.getForEntity(baseUrl() + "/api/airports?q=porto&limit=10", String.class);
         assertThat(airports.getStatusCode().is2xxSuccessful()).isTrue();
@@ -117,6 +144,8 @@ class SimulationApiIT {
         JsonNode portoSnapshot = snapshot();
         assertThat(portoSnapshot.path("airport").path("code").asText()).isEqualTo("OPO");
         assertThat(portoSnapshot.path("airport").path("runways").asLong()).isEqualTo(1L);
+        assertThat(portoSnapshot.path("flights").get(0).path("originLabel").asText()
+                + portoSnapshot.path("flights").get(0).path("destinationLabel").asText()).contains("OPO");
 
         post("/api/weather/manual", """
                 {
@@ -155,8 +184,52 @@ class SimulationApiIT {
         assertThat(snapshot().path("running").asBoolean()).isTrue();
     }
 
+    @Test
+    void exposesOperationsDashboardsAndControls() throws Exception {
+        JsonNode summary = getJson("/api/operations/summary");
+        assertThat(summary.path("passengersTotal").asLong()).isGreaterThan(0L);
+        assertThat(summary.path("baggageTotal").asLong()).isGreaterThan(0L);
+        assertThat(summary.path("checkInQueue").asLong()).isGreaterThanOrEqualTo(0L);
+
+        JsonNode bags = getJson("/api/operations/baggage?limit=2");
+        assertThat(bags).hasSizeLessThanOrEqualTo(2);
+        assertThat(bags.get(0).path("tag").asText()).startsWith("BAG");
+
+        JsonNode screenedBags = getJson("/api/operations/baggage?status=SCREENED&limit=10");
+        for (JsonNode bag : screenedBags) {
+            assertThat(bag.path("status").asText()).isEqualTo("SCREENED");
+        }
+
+        JsonNode gates = getJson("/api/operations/gates");
+        assertThat(gates).isNotEmpty();
+        assertThat(gates.get(0).path("gateCode").asText()).isNotBlank();
+
+        JsonNode ground = getJson("/api/operations/ground");
+        assertThat(ground).isNotEmpty();
+        assertThat(ground.get(0).path("operationType").asText()).isNotBlank();
+
+        long flightId = snapshot().path("flights").get(0).path("id").asLong();
+        post("/api/flights/" + flightId + "/control", """
+                {"status":"DELAYED","delayMinutes":25,"reason":"integration test delay"}
+                """);
+        JsonNode delayedFlight = findFlight(snapshot(), flightId);
+        assertThat(delayedFlight.path("status").asText()).isEqualTo("DELAYED");
+        assertThat(delayedFlight.path("delayMinutes").asInt()).isEqualTo(25);
+        assertThat(delayedFlight.path("delayReason").asText()).contains("integration test delay");
+
+        post("/api/operations/disruption", """
+                {"type":"BAGGAGE_JAM","severity":2,"durationMinutes":20}
+                """);
+        JsonNode disrupted = getJson("/api/operations/summary");
+        assertThat(disrupted.path("baggageBacklog").asLong()).isGreaterThan(0L);
+    }
+
     private JsonNode snapshot() throws Exception {
-        ResponseEntity<String> response = restTemplate.getForEntity(baseUrl() + "/api/snapshot", String.class);
+        return getJson("/api/snapshot");
+    }
+
+    private JsonNode getJson(String path) throws Exception {
+        ResponseEntity<String> response = restTemplate.getForEntity(baseUrl() + path, String.class);
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         return objectMapper.readTree(response.getBody());
     }
@@ -175,6 +248,15 @@ class SimulationApiIT {
 
     private String baseUrl() {
         return "http://localhost:" + port + "/airport-simulation";
+    }
+
+    private JsonNode findFlight(JsonNode snapshot, long flightId) {
+        for (JsonNode flight : snapshot.path("flights")) {
+            if (flight.path("id").asLong() == flightId) {
+                return flight;
+            }
+        }
+        throw new AssertionError("Flight not found: " + flightId);
     }
 
     private static Path createDataDir() {
