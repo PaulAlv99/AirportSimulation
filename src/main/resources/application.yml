@@ -1,0 +1,33 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /projects/airport-simulation
+
+spring:
+  application:
+    name: airport-simulation
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/airport_simulation}
+    username: ${SPRING_DATASOURCE_USERNAME:airport}
+    password: ${SPRING_DATASOURCE_PASSWORD:airport}
+  flyway:
+    enabled: true
+  sql:
+    init:
+      mode: never
+  mvc:
+    problemdetails:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+airport-simulation:
+  data-dir: ${AIRPORT_SIMULATION_DATA_DIR:data}
+  auto-start: ${AIRPORT_SIMULATION_AUTO_START:true}
+  tick-interval: ${AIRPORT_SIMULATION_TICK_INTERVAL:1s}
+  demo-flight-count: ${AIRPORT_SIMULATION_DEMO_FLIGHT_COUNT:12}
+  flight-seed-limit: ${AIRPORT_SIMULATION_FLIGHT_SEED_LIMIT:24}

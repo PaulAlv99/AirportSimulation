@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airport Simulation</title>
+    <link rel="stylesheet" href="app.css">
+    <script src="https://unpkg.com/lucide@0.539.0/dist/umd/lucide.js"></script>
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">
+        <div class="brand-mark">AS</div>
+        <div>
+            <h1>Airport Simulation</h1>
+            <p id="subtitle">Loading live dashboard...</p>
+        </div>
+    </div>
+    <div class="topbar-meta">
+        <div class="live-chip" id="run-state">Booting</div>
+        <div class="clock" id="clock">--</div>
+    </div>
+</header>
+
+<main class="shell">
+    <section class="toolbar panel">
+        <div class="controls">
+            <button class="button primary" id="start-btn" type="button"><i data-lucide="play"></i><span>Start</span></button>
+            <button class="button" id="pause-btn" type="button"><i data-lucide="pause"></i><span>Pause</span></button>
+            <button class="button" id="reset-btn" type="button"><i data-lucide="rotate-ccw"></i><span>Reset</span></button>
+            <button class="button danger" id="reseed-btn" type="button"><i data-lucide="database-zap"></i><span>Reimport</span></button>
+        </div>
+        <div class="control-group">
+            <label for="multiplier">Multiplier</label>
+            <div class="inline-control">
+                <select id="multiplier">
+                    <option value="x1">x1</option>
+                    <option value="x2">x2</option>
+                    <option value="x10">x10</option>
+                    <option value="x20">x20</option>
+                </select>
+                <button class="button" id="apply-multiplier" type="button"><i data-lucide="check"></i><span>Apply</span></button>
+            </div>
+        </div>
+    </section>
+
+    <section class="grid">
+        <article class="panel summary">
+            <h2>Airport</h2>
+            <div class="stat-value" id="airport-name">--</div>
+            <div class="stat-subtle" id="airport-meta">--</div>
+        </article>
+        <article class="panel summary">
+            <h2>Simulation Time</h2>
+            <div class="stat-value" id="sim-time">--</div>
+            <div class="stat-subtle" id="sim-multiplier">--</div>
+        </article>
+        <article class="panel summary">
+            <h2>Weather</h2>
+            <div class="stat-value" id="weather-severity">--</div>
+            <div class="stat-subtle" id="weather-meta">--</div>
+        </article>
+        <article class="panel summary">
+            <h2>Import Counts</h2>
+            <div class="count-grid" id="count-grid"></div>
+        </article>
+    </section>
+
+    <section class="split">
+        <article class="panel panel-large">
+            <div class="panel-head">
+                <h2>Live Flights</h2>
+                <span class="panel-note" id="flight-count">0 flights</span>
+            </div>
+            <div class="table-wrap">
+                <table class="data-table">
+                    <thead>
+                    <tr>
+                        <th>Flight</th>
+                        <th>Route</th>
+                        <th>Departure</th>
+                        <th>Arrival</th>
+                        <th>Status</th>
+                        <th>Gate</th>
+                        <th>Delay</th>
+                    </tr>
+                    </thead>
+                    <tbody id="flight-body"></tbody>
+                </table>
+            </div>
+        </article>
+
+        <article class="panel panel-large">
+            <div class="panel-head">
+                <h2>Recent Events</h2>
+                <span class="panel-note" id="event-count">0 events</span>
+            </div>
+            <div class="events" id="events"></div>
+        </article>
+    </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
