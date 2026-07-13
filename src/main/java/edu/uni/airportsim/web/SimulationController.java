@@ -5,6 +5,7 @@ import edu.uni.airportsim.runtime.BaggageView;
 import edu.uni.airportsim.runtime.GateView;
 import edu.uni.airportsim.runtime.GroundOperationView;
 import edu.uni.airportsim.runtime.OperationSummary;
+import edu.uni.airportsim.runtime.PassengerManifestView;
 import edu.uni.airportsim.runtime.SimulationFacade;
 import edu.uni.airportsim.runtime.SimulationSnapshot;
 import edu.uni.airportsim.runtime.WeatherInput;
@@ -128,6 +129,14 @@ public class SimulationController {
     public ResponseEntity<Void> flightControl(@PathVariable("id") long id, @Valid @RequestBody FlightControlRequest request) {
         facade.controlFlight(id, request.status(), request.delayMinutes(), request.reason());
         return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/flights/{id}/passengers")
+    public List<PassengerManifestView> flightPassengers(
+            @PathVariable("id") long id,
+            @RequestParam(name = "limit", defaultValue = "180") @Range(min = 1, max = 500) int limit
+    ) {
+        return facade.passengersForFlight(id, limit);
     }
 
     public record MultiplierRequest(@NotBlank String multiplier) {

@@ -46,6 +46,16 @@ public class SimulationFacade implements ApplicationRunner {
             "ARRIVED",
             "CANCELLED"
     );
+    private static final String[] FIRST_NAMES = {
+            "Ana", "Miguel", "Sofia", "Joao", "Mariana", "Pedro", "Carolina", "Tiago",
+            "Beatriz", "Rafael", "Ines", "Luis", "Marta", "Nuno", "Clara", "Andre",
+            "Diana", "Bruno", "Helena", "Ricardo", "Laura", "Goncalo", "Teresa", "Daniel"
+    };
+    private static final String[] LAST_NAMES = {
+            "Silva", "Santos", "Costa", "Ferreira", "Oliveira", "Almeida", "Martins", "Rodrigues",
+            "Pereira", "Gomes", "Carvalho", "Ribeiro", "Fernandes", "Lopes", "Moreira", "Cardoso",
+            "Nunes", "Barbosa", "Correia", "Azevedo", "Mendes", "Teixeira", "Moura", "Castro"
+    };
 
     private final JdbcTemplate jdbcTemplate;
     private final CsvCopyLoader copyLoader;
@@ -452,6 +462,47 @@ public class SimulationFacade implements ApplicationRunner {
                 rs.getString("exception_reason"),
                 rs.getObject("last_updated", LocalDateTime.class)
         ), args.toArray());
+    }
+
+    public List<PassengerManifestView> passengersForFlight(long flightId, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        return jdbcTemplate.query("""
+                select id,
+                       flight_id,
+                       passenger_code,
+                       full_name,
+                       seat_number,
+                       travel_document,
+                       status,
+                       checked_in,
+                       security_cleared,
+                       boarded,
+                       missed_connection,
+                       baggage_count,
+                       last_updated
+                from simulation_passengers
+                where flight_id = ?
+                order by missed_connection,
+                         boarded desc,
+                         checked_in desc,
+                         seat_number nulls last,
+                         id
+                limit ?
+                """, (rs, rowNum) -> new PassengerManifestView(
+                rs.getLong("id"),
+                rs.getLong("flight_id"),
+                rs.getString("passenger_code"),
+                rs.getString("full_name"),
+                rs.getString("seat_number"),
+                rs.getString("travel_document"),
+                rs.getString("status"),
+                rs.getBoolean("checked_in"),
+                rs.getBoolean("security_cleared"),
+                rs.getBoolean("boarded"),
+                rs.getBoolean("missed_connection"),
+                rs.getInt("baggage_count"),
+                rs.getObject("last_updated", LocalDateTime.class)
+        ), flightId, safeLimit);
     }
 
     public List<GateView> gates() {
@@ -965,6 +1016,9 @@ public class SimulationFacade implements ApplicationRunner {
                 passengers.add(new Object[] {
                         flight.id(),
                         passengerCode(flight.id(), index),
+                        passengerName(random),
+                        seatNumberFor(index, flight.aircraftCode()),
+                        travelDocumentFor(flight.id(), index),
                         passengerState.status(),
                         passengerState.checkedIn(),
                         passengerState.securityCleared(),
@@ -992,6 +1046,9 @@ public class SimulationFacade implements ApplicationRunner {
                 insert into simulation_passengers (
                     flight_id,
                     passenger_code,
+                    full_name,
+                    seat_number,
+                    travel_document,
                     status,
                     checked_in,
                     security_cleared,
@@ -999,7 +1056,7 @@ public class SimulationFacade implements ApplicationRunner {
                     missed_connection,
                     baggage_count,
                     last_updated
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, passengers);
         batchUpdate("""
                 insert into simulation_baggage (
@@ -2672,6 +2729,22 @@ public class SimulationFacade implements ApplicationRunner {
 
     private String passengerCode(long flightId, int index) {
         return "PAX-" + flightId + "-" + (index + 1);
+    }
+
+    private String passengerName(SplittableRandom random) {
+        return FIRST_NAMES[random.nextInt(FIRST_NAMES.length)] + " " + LAST_NAMES[random.nextInt(LAST_NAMES.length)];
+    }
+
+    private String seatNumberFor(int index, String aircraftCode) {
+        int seatsPerRow = aircraftCapacity(aircraftCode) > 210 ? 9 : 6;
+        int row = (index / seatsPerRow) + 1;
+        char seat = (char) ('A' + (index % seatsPerRow));
+        return row + String.valueOf(seat);
+    }
+
+    private String travelDocumentFor(long flightId, int index) {
+        long value = Math.abs((flightId * 1000L) + index + 1000000L);
+        return "P" + value;
     }
 
     private String baggageTag(long flightId, int index) {

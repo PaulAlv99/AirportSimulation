@@ -3,13 +3,21 @@ server:
   servlet:
     context-path: ${SERVER_SERVLET_CONTEXT_PATH:/airport-simulation}
 
+debug: ${SPRING_DEBUG:false}
+
 spring:
   application:
     name: airport-simulation
+  main:
+    banner-mode: ${SPRING_MAIN_BANNER_MODE:off}
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/airport_simulation}
     username: ${SPRING_DATASOURCE_USERNAME:airport}
     password: ${SPRING_DATASOURCE_PASSWORD:airport}
+    hikari:
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:20}
+      minimum-idle: ${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:4}
+      connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:10000}
   flyway:
     enabled: true
   sql:
@@ -24,6 +32,17 @@ management:
     web:
       exposure:
         include: health,info
+
+logging:
+  level:
+    root: INFO
+    org.springframework.boot: INFO
+    org.springframework.boot.autoconfigure: INFO
+    org.springframework.boot.web.servlet: INFO
+    org.springframework.boot.web.servlet.ServletContextInitializerBeans: INFO
+    org.springframework.context: INFO
+    org.springframework.jdbc.core: INFO
+    org.springframework.web: INFO
 
 airport-simulation:
   data-dir: ${AIRPORT_SIMULATION_DATA_DIR:data}

@@ -552,6 +552,16 @@ svg {
     max-height: min(64vh, 680px);
 }
 
+.table-wrap.manifest {
+    max-height: min(46vh, 460px);
+}
+
+.manifest-panel {
+    margin-top: 0.75rem;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+}
+
 .data-table {
     width: 100%;
     min-width: 860px;
@@ -573,6 +583,10 @@ svg {
 
 .data-table.flights-table {
     min-width: 1180px;
+}
+
+.data-table.manifest-table {
+    min-width: 760px;
 }
 
 .data-table th {
@@ -796,6 +810,10 @@ svg {
 
     .data-table.flights-table {
         min-width: 1040px;
+    }
+
+    .data-table.manifest-table {
+        min-width: 720px;
     }
 
     .control-cell {

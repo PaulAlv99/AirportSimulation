@@ -122,6 +122,7 @@ class SimulationApiIT {
         registry.add("airport-simulation.ground-jitter-minutes", () -> 20);
         registry.add("airport-simulation.tick-interval", () -> "1h");
         registry.add("server.servlet.context-path", () -> "/airport-simulation");
+        registry.add("debug", () -> "false");
     }
 
     @Test
@@ -228,6 +229,12 @@ class SimulationApiIT {
         JsonNode gates = getJson("/api/operations/gates");
         assertThat(gates).isNotEmpty();
         assertThat(gates.get(0).path("gateCode").asText()).isNotBlank();
+
+        long manifestFlightId = snapshot().path("flights").get(0).path("id").asLong();
+        JsonNode passengers = getJson("/api/flights/" + manifestFlightId + "/passengers?limit=5");
+        assertThat(passengers).isNotEmpty();
+        assertThat(passengers.get(0).path("fullName").asText()).contains(" ");
+        assertThat(passengers.get(0).path("seatNumber").asText()).isNotBlank();
 
         JsonNode ground = getJson("/api/operations/ground");
         assertThat(ground).isNotEmpty();
