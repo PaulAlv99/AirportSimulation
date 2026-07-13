@@ -3,7 +3,12 @@ const state = {
     airports: [],
     activeTab: "overview",
     polling: false,
-    weatherTouched: false
+    weatherTouched: false,
+    airportsLoading: false,
+    airportsError: "",
+    airportSearchQuery: "",
+    airportSearchTimer: null,
+    airportSearchController: null
 };
 
 const fmt = new Intl.DateTimeFormat(undefined, {
@@ -16,7 +21,9 @@ const elements = {};
 document.addEventListener("DOMContentLoaded", () => {
     bindElements();
     bindEvents();
-    refreshAll();
+    highlightMultiplier("x1");
+    void refresh();
+    void loadAirports();
     window.setInterval(refresh, 1000);
     if (window.lucide) {
         window.lucide.createIcons();
@@ -29,16 +36,17 @@ function bindElements() {
         "sim-multiplier", "weather-severity", "weather-meta", "flight-total",
         "flight-flow", "airport-position", "airport-detail", "weather-observed",
         "weather-detail", "status-total", "status-grid", "airport-count",
-        "airport-search", "refresh-airports", "airport-body", "weather-current",
+        "airport-summary", "airport-summary-code", "airport-search",
+        "refresh-airports", "airport-body", "weather-current", "weather-source",
         "fetch-weather", "weather-form", "load-weather-form", "flight-count",
         "flight-body", "status-filter", "count-grid", "events", "event-count",
-        "multiplier", "start-btn", "pause-btn", "reset-btn", "reseed-btn",
-        "apply-multiplier"
+        "start-btn", "pause-btn", "reset-btn", "reseed-btn"
     ]) {
         elements[toCamel(id)] = document.getElementById(id);
     }
     elements.tabs = [...document.querySelectorAll(".tab")];
     elements.views = [...document.querySelectorAll(".dashboard")];
+    elements.multiplierButtons = [...document.querySelectorAll("[data-multiplier]")];
 }
 
 function bindEvents() {
@@ -50,13 +58,14 @@ function bindEvents() {
     elements.resetBtn.addEventListener("click", () => mutate("api/control/reset"));
     elements.reseedBtn.addEventListener("click", async () => {
         await mutate("api/import/reseed");
-        await loadAirports();
+        await loadAirports({force: true});
     });
-    elements.applyMultiplier.addEventListener("click", () => mutate("api/control/multiplier", {
-        multiplier: elements.multiplier.value
-    }));
-    elements.airportSearch.addEventListener("input", renderAirports);
-    elements.refreshAirports.addEventListener("click", loadAirports);
+    elements.multiplierButtons.forEach((button) => {
+        button.addEventListener("click", () => setMultiplier(button.dataset.multiplier));
+    });
+    elements.airportSearch.addEventListener("input", scheduleAirportSearch);
+    elements.airportSearch.addEventListener("search", scheduleAirportSearch);
+    elements.refreshAirports.addEventListener("click", () => loadAirports({force: true}));
     elements.statusFilter.addEventListener("change", () => renderFlights(state.snapshot?.flights || []));
     elements.fetchWeather.addEventListener("click", async () => {
         state.weatherTouched = false;
@@ -76,20 +85,61 @@ function bindEvents() {
     });
 }
 
-async function refreshAll() {
-    await Promise.all([loadAirports(), refresh()]);
+function scheduleAirportSearch() {
+    window.clearTimeout(state.airportSearchTimer);
+    state.airportSearchTimer = window.setTimeout(() => {
+        void loadAirports();
+    }, 250);
 }
 
-async function loadAirports() {
+function setMultiplier(multiplier) {
+    if (!multiplier) {
+        return;
+    }
+    highlightMultiplier(multiplier);
+    void mutate("api/control/multiplier", {multiplier});
+}
+
+async function loadAirports({force = false} = {}) {
+    const query = elements.airportSearch.value.trim();
+    state.airportSearchQuery = query;
+    state.airportsLoading = true;
+    state.airportsError = "";
+    renderAirports();
+
+    if (state.airportSearchController) {
+        state.airportSearchController.abort();
+    }
+    const controller = new AbortController();
+    state.airportSearchController = controller;
+
+    const params = new URLSearchParams();
+    if (query) {
+        params.set("q", query);
+    }
+    params.set("limit", force ? "80" : "40");
+
     try {
-        const response = await fetch("api/airports", {headers: {"Accept": "application/json"}});
+        const response = await fetch(`api/airports?${params.toString()}`, {
+            headers: {"Accept": "application/json"},
+            signal: controller.signal
+        });
         if (!response.ok) {
             throw new Error(`Airport request failed: ${response.status}`);
         }
         state.airports = await response.json();
-        renderAirports();
     } catch (error) {
-        showMessage(error.message);
+        if (error.name !== "AbortError" && state.airportSearchController === controller) {
+            state.airports = [];
+            state.airportsError = error.message;
+            showMessage(error.message);
+        }
+    } finally {
+        if (state.airportSearchController === controller) {
+            state.airportSearchController = null;
+            state.airportsLoading = false;
+            renderAirports();
+        }
     }
 }
 
@@ -137,10 +187,12 @@ function render(snapshot) {
     elements.subtitle.textContent = `${number(snapshot.counts.airports)} airports, ${number(snapshot.flights.length)} active simulation flights, ${snapshot.airport?.code || "no airport"} selected.`;
     elements.runState.textContent = snapshot.running ? "Running" : "Paused";
     elements.runState.className = `live-chip ${snapshot.running ? "running" : "paused"}`;
-    elements.multiplier.value = snapshot.multiplier;
 
     renderOverview(snapshot);
-    renderWeather(snapshot.weather);
+    renderAirportSummary(snapshot);
+    renderWeather(snapshot.weather, snapshot.airport);
+    highlightMultiplier(snapshot.multiplier);
+    renderAirports();
     renderFlights(snapshot.flights);
     renderCounts(snapshot.counts);
     renderEvents(snapshot.events);
@@ -206,17 +258,50 @@ function renderOverview(snapshot) {
     `).join("");
 }
 
+function renderAirportSummary(snapshot) {
+    const airport = snapshot.airport;
+    elements.airportSummaryCode.textContent = airport?.code || "--";
+    elements.airportSummary.innerHTML = detailItems([
+        ["Code", airport?.code],
+        ["Name", airport?.name],
+        ["City", airport?.city],
+        ["Country", airport?.country],
+        ["Type", airport?.type],
+        ["Runways", airport?.runways],
+        ["Coordinates", airport?.latitude != null ? `${airport.latitude.toFixed(4)}, ${airport.longitude.toFixed(4)}` : null]
+    ]);
+}
+
 function renderAirports() {
     const activeCode = state.snapshot?.airport?.code;
-    const query = elements.airportSearch.value.trim().toLowerCase();
-    const airports = state.airports.filter((airport) => {
-        if (!query) {
-            return true;
-        }
-        return [airport.code, airport.ident, airport.name, airport.city, airport.country, airport.type]
-            .some((value) => String(value || "").toLowerCase().includes(query));
-    });
-    elements.airportCount.textContent = `${number(airports.length)} of ${number(state.airports.length)} airports`;
+    if (state.airportsLoading) {
+        elements.airportCount.textContent = state.airportSearchQuery
+            ? `Loading matches for "${state.airportSearchQuery}"`
+            : "Loading airports";
+        elements.airportBody.innerHTML = tableMessageRow("Loading airports", "Fetching imported airport data");
+        return;
+    }
+    if (state.airportsError) {
+        elements.airportCount.textContent = "Airport data unavailable";
+        elements.airportBody.innerHTML = tableMessageRow("Airport list unavailable", state.airportsError);
+        return;
+    }
+
+    const airports = state.airports;
+    const queryLabel = state.airportSearchQuery
+        ? `matches for "${state.airportSearchQuery}"`
+        : `top ${number(airports.length)} airports`;
+    elements.airportCount.textContent = state.airportSearchQuery
+        ? `${number(airports.length)} airport${airports.length === 1 ? "" : "s"} ${queryLabel}`
+        : `Showing ${queryLabel}`;
+    if (airports.length === 0) {
+        elements.airportBody.innerHTML = tableMessageRow(
+            state.airportSearchQuery ? `No airports match "${state.airportSearchQuery}"` : "No airports imported",
+            state.airportSearchQuery ? "Try a broader search term" : "Load import data to populate the selector"
+        );
+        return;
+    }
+
     elements.airportBody.innerHTML = airports.map((airport) => `
         <tr class="${airport.code === activeCode ? "selected-row" : ""}">
             <td><strong>${escapeHtml(airport.name)}</strong><div class="stat-subtle">${escapeHtml(airport.code)} ${airport.ident ? "| " + escapeHtml(airport.ident) : ""}</div></td>
@@ -224,7 +309,7 @@ function renderAirports() {
             <td>${escapeHtml(airport.type)}</td>
             <td>${airport.latitude == null ? "--" : `${airport.latitude.toFixed(4)}, ${airport.longitude.toFixed(4)}`}</td>
             <td>${number(airport.runways)}</td>
-            <td><button class="button small" data-airport-code="${escapeHtml(airport.code)}" type="button">${airport.code === activeCode ? "Active" : "Select"}</button></td>
+            <td><button class="button small ${airport.code === activeCode ? "primary" : ""}" data-airport-code="${escapeHtml(airport.code)}" type="button">${airport.code === activeCode ? "Selected" : "Select"}</button></td>
         </tr>
     `).join("");
     elements.airportBody.querySelectorAll("[data-airport-code]").forEach((button) => {
@@ -232,11 +317,13 @@ function renderAirports() {
     });
 }
 
-function renderWeather(weather) {
+function renderWeather(weather, airport) {
     if (!weather) {
+        elements.weatherSource.textContent = airport ? `Weather for ${airport.code}` : "Simulation snapshot";
         elements.weatherCurrent.innerHTML = "";
         return;
     }
+    elements.weatherSource.textContent = airport ? `Weather for ${airport.code}` : "Simulation snapshot";
     elements.weatherCurrent.innerHTML = `
         <div class="weather-severity ${weather.severityCode.toLowerCase()}">${escapeHtml(weather.severityLabel)}</div>
         <div class="weather-metrics">
@@ -360,6 +447,17 @@ function setTab(tabName) {
     state.activeTab = tabName;
     elements.tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === tabName));
     elements.views.forEach((view) => view.classList.toggle("active", view.id === `view-${tabName}`));
+    if (tabName === "airports" && !state.airportsLoading && state.airports.length === 0 && !state.airportsError) {
+        void loadAirports();
+    }
+}
+
+function highlightMultiplier(multiplier) {
+    elements.multiplierButtons.forEach((button) => {
+        const active = button.dataset.multiplier === multiplier;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+    });
 }
 
 function updateStatusFilter(flights) {
@@ -369,6 +467,17 @@ function updateStatusFilter(flights) {
         <option value="${escapeHtml(status)}">${escapeHtml(status)}</option>
     `).join("");
     elements.statusFilter.value = statuses.includes(current) ? current : "ALL";
+}
+
+function tableMessageRow(title, message) {
+    return `
+        <tr>
+            <td class="table-state" colspan="6">
+                <strong>${escapeHtml(title)}</strong>
+                <span>${escapeHtml(message)}</span>
+            </td>
+        </tr>
+    `;
 }
 
 function detailItems(items) {

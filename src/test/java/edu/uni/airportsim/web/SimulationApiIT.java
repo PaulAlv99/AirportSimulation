@@ -89,10 +89,11 @@ class SimulationApiIT {
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("airport-simulation.data-dir", () -> DATA_DIR.toString());
+        registry.add("airport-simulation.default-airport-code", () -> "TST");
         registry.add("airport-simulation.flight-seed-limit", () -> 3);
         registry.add("airport-simulation.demo-flight-count", () -> 3);
         registry.add("airport-simulation.tick-interval", () -> "1h");
-        registry.add("server.servlet.context-path", () -> "/projects/airport-simulation");
+        registry.add("server.servlet.context-path", () -> "/airport-simulation");
     }
 
     @Test
@@ -104,9 +105,11 @@ class SimulationApiIT {
         assertThat(snapshot.path("counts").path("demoFlights").asLong()).isEqualTo(3L);
         assertThat(snapshot.path("flights")).hasSize(3);
 
-        ResponseEntity<String> airports = restTemplate.getForEntity(baseUrl() + "/api/airports", String.class);
+        ResponseEntity<String> airports = restTemplate.getForEntity(baseUrl() + "/api/airports?q=porto&limit=10", String.class);
         assertThat(airports.getStatusCode().is2xxSuccessful()).isTrue();
-        assertThat(objectMapper.readTree(airports.getBody())).hasSize(2);
+        JsonNode airportResults = objectMapper.readTree(airports.getBody());
+        assertThat(airportResults).hasSize(1);
+        assertThat(airportResults.get(0).path("code").asText()).isEqualTo("OPO");
 
         post("/api/airport/select", """
                 {"code":"OPO"}
@@ -171,7 +174,7 @@ class SimulationApiIT {
     }
 
     private String baseUrl() {
-        return "http://localhost:" + port + "/projects/airport-simulation";
+        return "http://localhost:" + port + "/airport-simulation";
     }
 
     private static Path createDataDir() {

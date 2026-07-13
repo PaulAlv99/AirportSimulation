@@ -135,8 +135,38 @@ public class SimulationFacade implements ApplicationRunner {
         shuttingDown = true;
     }
 
-    public List<AirportOption> airports() {
-        return jdbcTemplate.query("""
+    public List<AirportOption> airports(String query, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        String search = query == null ? "" : query.trim();
+        if (search.isBlank()) {
+            return queryAirportOptions("""
+                            select a.id,
+                                   coalesce(nullif(a.iata_code, ''), nullif(a.ident, ''), 'APT-' || a.id::text) as code,
+                                   a.ident,
+                                   a.name,
+                                   coalesce(nullif(a.municipality, ''), a.name) as city,
+                                   coalesce(nullif(a.iso_country, ''), 'UNKNOWN') as country,
+                                   coalesce(nullif(a.type, ''), 'airport') as type,
+                                   a.latitude_deg,
+                                   a.longitude_deg,
+                                   (
+                                       select count(*)
+                                       from import_runways r
+                                       where r.airport_ref = a.id or r.airport_ident = a.ident
+                                   ) as runways
+                            from import_airports a
+                            where coalesce(nullif(a.iata_code, ''), nullif(a.ident, '')) is not null
+                            order by case when lower(coalesce(nullif(a.scheduled_service, ''), 'no')) = 'yes' then 0 else 1 end,
+                                     case when nullif(a.iata_code, '') is not null then 0 else 1 end,
+                                     a.name,
+                                     a.id
+                            limit ?
+                            """,
+                    safeLimit);
+        }
+
+        String pattern = "%" + search.toLowerCase(Locale.ROOT) + "%";
+        return queryAirportOptions("""
                         select a.id,
                                coalesce(nullif(a.iata_code, ''), nullif(a.ident, ''), 'APT-' || a.id::text) as code,
                                a.ident,
@@ -146,25 +176,28 @@ public class SimulationFacade implements ApplicationRunner {
                                coalesce(nullif(a.type, ''), 'airport') as type,
                                a.latitude_deg,
                                a.longitude_deg,
-                               count(r.id) as runways
+                               (
+                                   select count(*)
+                                   from import_runways r
+                                   where r.airport_ref = a.id or r.airport_ident = a.ident
+                               ) as runways
                         from import_airports a
-                        left join import_runways r on r.airport_ref = a.id or r.airport_ident = a.ident
                         where coalesce(nullif(a.iata_code, ''), nullif(a.ident, '')) is not null
-                        group by a.id, a.iata_code, a.ident, a.name, a.municipality, a.iso_country, a.type, a.latitude_deg, a.longitude_deg
-                        order by a.name
-                        limit 500
+                          and (
+                              coalesce(nullif(a.iata_code, ''), nullif(a.ident, ''), '') ilike ?
+                              or coalesce(nullif(a.ident, ''), '') ilike ?
+                              or a.name ilike ?
+                              or coalesce(nullif(a.municipality, ''), '') ilike ?
+                              or coalesce(nullif(a.iso_country, ''), '') ilike ?
+                              or coalesce(nullif(a.type, ''), '') ilike ?
+                          )
+                        order by case when lower(coalesce(nullif(a.scheduled_service, ''), 'no')) = 'yes' then 0 else 1 end,
+                                 case when nullif(a.iata_code, '') is not null then 0 else 1 end,
+                                 a.name,
+                                 a.id
+                        limit ?
                         """,
-                (rs, rowNum) -> new AirportOption(
-                        rs.getString("code"),
-                        rs.getString("ident"),
-                        rs.getString("name"),
-                        rs.getString("city"),
-                        rs.getString("country"),
-                        rs.getString("type"),
-                        nullableDouble(rs, "latitude_deg"),
-                        nullableDouble(rs, "longitude_deg"),
-                        rs.getLong("runways")
-                ));
+                pattern, pattern, pattern, pattern, pattern, pattern, safeLimit);
     }
 
     @Transactional
@@ -713,8 +746,9 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private AirportRow defaultAirport() {
-        List<AirportRow> airports = jdbcTemplate.query("""
-                        select id, coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-' || id::text) as code,
+        List<AirportRow> airports = queryAirportRows("""
+                        select id,
+                               coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-' || id::text) as code,
                                ident,
                                name,
                                coalesce(nullif(municipality, ''), name) as city,
@@ -723,20 +757,13 @@ public class SimulationFacade implements ApplicationRunner {
                                latitude_deg,
                                longitude_deg
                         from import_airports
-                        order by id
+                        where coalesce(nullif(iata_code, ''), nullif(ident, '')) is not null
+                        order by case when lower(coalesce(nullif(scheduled_service, ''), 'no')) = 'yes' then 0 else 1 end,
+                                 case when nullif(iata_code, '') is not null then 0 else 1 end,
+                                 name,
+                                 id
                         limit 1
-                        """,
-                (rs, rowNum) -> new AirportRow(
-                        rs.getLong("id"),
-                        rs.getString("code"),
-                        rs.getString("ident"),
-                        rs.getString("name"),
-                        rs.getString("city"),
-                        rs.getString("country"),
-                        rs.getString("type"),
-                        nullableDouble(rs, "latitude_deg"),
-                        nullableDouble(rs, "longitude_deg")
-                ));
+                        """);
         if (airports.isEmpty()) {
             return new AirportRow(1L, "APT-DEMO", "APT-DEMO", "Airport Demo", "Airport Demo", "Portugal", "airport", null, null);
         }
@@ -744,14 +771,15 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private String activeAirportCode() {
-        return jdbcTemplate.query("""
-                        select coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-DEMO') as code
-                        from import_airports
-                        where coalesce(nullif(iata_code, ''), nullif(ident, '')) is not null
-                        order by id
-                        limit 1
-                        """,
-                rs -> rs.next() ? rs.getString("code") : "APT-DEMO");
+        String configuredDefault = blankToDefault(properties.getDefaultAirportCode(), null);
+        if (configuredDefault != null) {
+            try {
+                return airportByCode(configuredDefault).code();
+            } catch (IllegalArgumentException ignored) {
+                // Fall back to the best imported airport below.
+            }
+        }
+        return defaultAirport().code();
     }
 
     private boolean hasWeatherFor(String airportCode) {
@@ -762,7 +790,7 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private AirportRow airportByCode(String airportCode) {
-        List<AirportRow> airports = jdbcTemplate.query("""
+        List<AirportRow> airports = queryAirportRows("""
                         select id,
                                coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-' || id::text) as code,
                                ident,
@@ -779,17 +807,6 @@ public class SimulationFacade implements ApplicationRunner {
                         order by id
                         limit 1
                         """,
-                (rs, rowNum) -> new AirportRow(
-                        rs.getLong("id"),
-                        rs.getString("code"),
-                        rs.getString("ident"),
-                        rs.getString("name"),
-                        rs.getString("city"),
-                        rs.getString("country"),
-                        rs.getString("type"),
-                        nullableDouble(rs, "latitude_deg"),
-                        nullableDouble(rs, "longitude_deg")
-                ),
                 airportCode,
                 airportCode,
                 airportCode);
@@ -797,6 +814,34 @@ public class SimulationFacade implements ApplicationRunner {
             throw new IllegalArgumentException("Unknown airport code: " + airportCode);
         }
         return airports.getFirst();
+    }
+
+    private List<AirportOption> queryAirportOptions(String sql, Object... args) {
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new AirportOption(
+                rs.getString("code"),
+                rs.getString("ident"),
+                rs.getString("name"),
+                rs.getString("city"),
+                rs.getString("country"),
+                rs.getString("type"),
+                nullableDouble(rs, "latitude_deg"),
+                nullableDouble(rs, "longitude_deg"),
+                rs.getLong("runways")
+        ), args);
+    }
+
+    private List<AirportRow> queryAirportRows(String sql, Object... args) {
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new AirportRow(
+                rs.getLong("id"),
+                rs.getString("code"),
+                rs.getString("ident"),
+                rs.getString("name"),
+                rs.getString("city"),
+                rs.getString("country"),
+                rs.getString("type"),
+                nullableDouble(rs, "latitude_deg"),
+                nullableDouble(rs, "longitude_deg")
+        ), args);
     }
 
     private void insertWeatherSnapshot(String airportCode, WeatherInput input) {

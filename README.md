@@ -7,7 +7,7 @@ Airport Simulation is now a Spring Boot web app with a live dashboard backed by 
 - imports CSV data from `data/import/`
 - seeds PostgreSQL through Flyway and a startup bootstrapper
 - runs the simulation independently on a scheduler
-- exposes a simple dashboard at `/projects/airport-simulation/`
+- exposes a browser dashboard at `/airport-simulation/`
 - keeps logs under `logs/` and save files under `saves/`
 
 ## Stack
@@ -42,7 +42,7 @@ java -jar target/airport-simulation-1.0.0.jar
 
 Open the app at:
 
-`http://localhost:8080/projects/airport-simulation/`
+`http://localhost:8080/airport-simulation/`
 
 CLI mode is still available:
 
@@ -58,6 +58,7 @@ docker compose up --build
 ```
 
 The compose stack starts PostgreSQL and the app together. It is meant to sit behind a shared reverse proxy on the external `proxy` network, so the app container only exposes port `8080` internally. The application expects its data mount at `/app/data`, so the repository `data/` directory is mounted into the container.
+Set `AIRPORT_SIMULATION_DEFAULT_AIRPORT_CODE` if you want a different default airport than the bundled `LIS`.
 
 ## Notes
 

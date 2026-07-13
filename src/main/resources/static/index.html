@@ -37,13 +37,15 @@
             <button class="icon-button" id="pause-btn" title="Pause simulation" type="button"><i data-lucide="pause"></i></button>
             <button class="icon-button" id="reset-btn" title="Reset generated simulation state" type="button"><i data-lucide="rotate-ccw"></i></button>
             <button class="icon-button danger" id="reseed-btn" title="Reimport CSV data" type="button"><i data-lucide="database-zap"></i></button>
-            <select id="multiplier" title="Simulation speed">
-                <option value="x1">x1</option>
-                <option value="x2">x2</option>
-                <option value="x10">x10</option>
-                <option value="x20">x20</option>
-            </select>
-            <button class="icon-button" id="apply-multiplier" title="Apply speed" type="button"><i data-lucide="check"></i></button>
+            <div class="speed-group" id="multiplier-group" aria-label="Simulation speed">
+                <span class="speed-label">Speed</span>
+                <div class="speed-buttons" role="group" aria-label="Time multiplier">
+                    <button class="speed-button" data-multiplier="x1" type="button">x1</button>
+                    <button class="speed-button" data-multiplier="x2" type="button">x2</button>
+                    <button class="speed-button" data-multiplier="x10" type="button">x10</button>
+                    <button class="speed-button" data-multiplier="x20" type="button">x20</button>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -99,33 +101,46 @@
     </section>
 
     <section class="dashboard" id="view-airports">
-        <article class="panel">
-            <div class="panel-head stackable">
-                <div>
-                    <h2>Airport Control</h2>
-                    <span class="panel-note" id="airport-count">0 airports</span>
+        <div class="airport-layout">
+            <article class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h2>Selected Airport</h2>
+                        <span class="panel-note" id="airport-count">0 airports</span>
+                    </div>
+                    <span class="panel-note" id="airport-summary-code">--</span>
                 </div>
-                <div class="field-row compact">
-                    <input id="airport-search" type="search" placeholder="Search airport, city, country, code">
-                    <button class="button" id="refresh-airports" type="button"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
+                <div class="detail-grid" id="airport-summary"></div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-head stackable">
+                    <div>
+                        <h2>Airport Control</h2>
+                        <span class="panel-note">Search and select from import data</span>
+                    </div>
+                    <div class="field-row compact">
+                        <input id="airport-search" type="search" placeholder="Search airport, city, country, code">
+                        <button class="button" id="refresh-airports" type="button"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
+                    </div>
                 </div>
-            </div>
-            <div class="table-wrap tall">
-                <table class="data-table">
-                    <thead>
-                    <tr>
-                        <th>Airport</th>
-                        <th>Location</th>
-                        <th>Type</th>
-                        <th>Coordinates</th>
-                        <th>Runways</th>
-                        <th></th>
-                    </tr>
-                    </thead>
-                    <tbody id="airport-body"></tbody>
-                </table>
-            </div>
-        </article>
+                <div class="table-wrap tall">
+                    <table class="data-table">
+                        <thead>
+                        <tr>
+                            <th>Airport</th>
+                            <th>Location</th>
+                            <th>Type</th>
+                            <th>Coordinates</th>
+                            <th>Runways</th>
+                            <th></th>
+                        </tr>
+                        </thead>
+                        <tbody id="airport-body"></tbody>
+                    </table>
+                </div>
+            </article>
+        </div>
     </section>
 
     <section class="dashboard" id="view-weather">

@@ -1,7 +1,7 @@
 server:
   port: 8080
   servlet:
-    context-path: /airport-simulation
+    context-path: ${SERVER_SERVLET_CONTEXT_PATH:/airport-simulation}
 
 spring:
   application:
@@ -27,6 +27,7 @@ management:
 
 airport-simulation:
   data-dir: ${AIRPORT_SIMULATION_DATA_DIR:data}
+  default-airport-code: ${AIRPORT_SIMULATION_DEFAULT_AIRPORT_CODE:LIS}
   auto-start: ${AIRPORT_SIMULATION_AUTO_START:true}
   tick-interval: ${AIRPORT_SIMULATION_TICK_INTERVAL:1s}
   demo-flight-count: ${AIRPORT_SIMULATION_DEMO_FLIGHT_COUNT:12}

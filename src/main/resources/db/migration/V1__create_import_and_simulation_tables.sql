@@ -142,7 +142,10 @@ create table if not exists bootstrap_status (
 );
 
 create index if not exists idx_import_airports_iata_code on import_airports (iata_code);
+create index if not exists idx_import_airports_ident on import_airports (ident);
 create index if not exists idx_import_weather_airport_observed on import_weather_snapshots (airport_id, observed_at desc);
 create index if not exists idx_import_airline_flights_row_id on import_airline_flights (row_id);
+create index if not exists idx_import_runways_airport_ref on import_runways (airport_ref);
+create index if not exists idx_import_runways_airport_ident on import_runways (airport_ident);
 create index if not exists idx_simulation_flights_status on simulation_flights (status);
 create index if not exists idx_simulation_events_occurred on simulation_events (occurred_at desc);

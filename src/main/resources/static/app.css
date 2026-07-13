@@ -145,6 +145,7 @@ select {
 
 .actions {
     justify-content: flex-end;
+    flex-wrap: wrap;
 }
 
 .tab,
@@ -208,6 +209,51 @@ input {
 .icon-button {
     width: 38px;
     padding: 0;
+}
+
+.speed-group {
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+}
+
+.speed-label {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0;
+}
+
+.speed-buttons {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.speed-button {
+    min-width: 48px;
+    height: 30px;
+    padding: 0 0.7rem;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel-soft);
+    color: var(--muted);
+    font-size: 0.84rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.speed-button.active {
+    color: #fff;
+    border-color: var(--accent);
+    background: var(--accent);
 }
 
 .icon-button.danger {
@@ -281,6 +327,12 @@ svg {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.75rem;
     margin-top: 0.75rem;
+}
+
+.airport-layout {
+    display: grid;
+    grid-template-columns: minmax(320px, 0.85fr) minmax(0, 1.15fr);
+    gap: 0.75rem;
 }
 
 .panel-span {
@@ -498,6 +550,21 @@ svg {
     text-transform: uppercase;
 }
 
+.table-state {
+    padding: 1rem 0.75rem;
+    color: var(--muted);
+}
+
+.table-state strong,
+.table-state span {
+    display: block;
+}
+
+.table-state strong {
+    margin-bottom: 0.2rem;
+    color: var(--ink);
+}
+
 .data-table tr:hover td,
 .selected-row td {
     background: rgba(15, 118, 110, 0.06);
@@ -567,6 +634,7 @@ svg {
 
 @media (max-width: 1180px) {
     .control-strip,
+    .airport-layout,
     .kpi-grid,
     .overview-grid,
     .weather-layout,
@@ -606,9 +674,20 @@ svg {
     .panel-head.stackable,
     .field-row,
     .button-row,
-    .form-actions {
+    .form-actions,
+    .speed-group {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .speed-buttons {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .speed-button {
+        width: 100%;
     }
 
     .field-row.compact input {

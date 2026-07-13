@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -35,8 +36,11 @@ public class SimulationController {
     }
 
     @GetMapping("/airports")
-    public List<AirportOption> airports() {
-        return facade.airports();
+    public List<AirportOption> airports(
+            @RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "limit", defaultValue = "40") @Range(min = 1, max = 100) int limit
+    ) {
+        return facade.airports(q, limit);
     }
 
     @PostMapping("/control/start")

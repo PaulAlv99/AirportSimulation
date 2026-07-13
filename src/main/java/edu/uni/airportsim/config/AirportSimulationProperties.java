@@ -8,7 +8,7 @@ import java.time.Duration;
 @ConfigurationProperties(prefix = "airport-simulation")
 public class AirportSimulationProperties {
     private Path dataDir = Path.of("data");
-    private String contextPath = "/projects/airport-simulation";
+    private String defaultAirportCode = "LIS";
     private boolean autoStart = true;
     private Duration tickInterval = Duration.ofSeconds(1);
     private int demoFlightCount = 12;
@@ -22,12 +22,12 @@ public class AirportSimulationProperties {
         this.dataDir = dataDir;
     }
 
-    public String getContextPath() {
-        return contextPath;
+    public String getDefaultAirportCode() {
+        return defaultAirportCode;
     }
 
-    public void setContextPath(String contextPath) {
-        this.contextPath = contextPath;
+    public void setDefaultAirportCode(String defaultAirportCode) {
+        this.defaultAirportCode = defaultAirportCode;
     }
 
     public boolean isAutoStart() {
