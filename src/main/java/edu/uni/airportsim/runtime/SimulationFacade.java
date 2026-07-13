@@ -1,17 +1,21 @@
 package edu.uni.airportsim.runtime;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import edu.uni.airportsim.config.AirportSimulationProperties;
 import edu.uni.airportsim.data.CsvCopyLoader;
 import edu.uni.airportsim.logging.LogLevel;
 import edu.uni.airportsim.logging.SimulationLogger;
 import edu.uni.airportsim.simulation.TimeMultiplier;
 import edu.uni.airportsim.weather.WeatherSeverity;
+import jakarta.annotation.PreDestroy;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.nio.file.Path;
 import java.time.Clock;
@@ -30,13 +34,18 @@ public class SimulationFacade implements ApplicationRunner {
     private final CsvCopyLoader copyLoader;
     private final AirportSimulationProperties properties;
     private final SimulationLogger logger;
+    private final RestClient weatherClient;
     private final Clock clock = Clock.systemDefaultZone();
+    private volatile boolean shuttingDown;
 
     public SimulationFacade(JdbcTemplate jdbcTemplate, CsvCopyLoader copyLoader, AirportSimulationProperties properties) {
         this.jdbcTemplate = jdbcTemplate;
         this.copyLoader = copyLoader;
         this.properties = properties;
         this.logger = new SimulationLogger(properties.logsDirectory());
+        this.weatherClient = RestClient.builder()
+                .baseUrl("https://api.open-meteo.com")
+                .build();
     }
 
     @Override
@@ -121,9 +130,90 @@ public class SimulationFacade implements ApplicationRunner {
         insertEvent("INFO", "CLOCK", "Multiplier changed to " + multiplier.label());
     }
 
+    @PreDestroy
+    public void stopScheduledWork() {
+        shuttingDown = true;
+    }
+
+    public List<AirportOption> airports() {
+        return jdbcTemplate.query("""
+                        select a.id,
+                               coalesce(nullif(a.iata_code, ''), nullif(a.ident, ''), 'APT-' || a.id::text) as code,
+                               a.ident,
+                               a.name,
+                               coalesce(nullif(a.municipality, ''), a.name) as city,
+                               coalesce(nullif(a.iso_country, ''), 'UNKNOWN') as country,
+                               coalesce(nullif(a.type, ''), 'airport') as type,
+                               a.latitude_deg,
+                               a.longitude_deg,
+                               count(r.id) as runways
+                        from import_airports a
+                        left join import_runways r on r.airport_ref = a.id or r.airport_ident = a.ident
+                        where coalesce(nullif(a.iata_code, ''), nullif(a.ident, '')) is not null
+                        group by a.id, a.iata_code, a.ident, a.name, a.municipality, a.iso_country, a.type, a.latitude_deg, a.longitude_deg
+                        order by a.name
+                        limit 500
+                        """,
+                (rs, rowNum) -> new AirportOption(
+                        rs.getString("code"),
+                        rs.getString("ident"),
+                        rs.getString("name"),
+                        rs.getString("city"),
+                        rs.getString("country"),
+                        rs.getString("type"),
+                        nullableDouble(rs, "latitude_deg"),
+                        nullableDouble(rs, "longitude_deg"),
+                        rs.getLong("runways")
+                ));
+    }
+
+    @Transactional
+    public void selectAirport(String airportCode) {
+        String normalizedCode = normalizeRequiredCode(airportCode);
+        AirportRow airport = airportByCode(normalizedCode);
+        jdbcTemplate.update("""
+                update simulation_state
+                set active_airport_code = ?, updated_at = ?
+                where id = 1
+                """,
+                airport.code(),
+                LocalDateTime.now(clock));
+        if (!hasWeatherFor(airport.code())) {
+            seedSyntheticWeather(airport.code());
+        }
+        insertEvent("INFO", "AIRPORT", "Active airport changed to " + airport.code() + " - " + airport.name());
+    }
+
+    @Transactional
+    public WeatherView updateWeather(WeatherInput input) {
+        Objects.requireNonNull(input, "input");
+        String airportCode = requireState().activeAirportCode();
+        insertWeatherSnapshot(airportCode, normalizeWeatherInput(input));
+        insertEvent("INFO", "WEATHER", "Manual weather update applied at " + airportCode);
+        return currentWeather(airportCode);
+    }
+
+    @Transactional
+    public WeatherView fetchRealWeather() {
+        SimulationStateRow state = requireState();
+        AirportRow airport = airportByCode(state.activeAirportCode());
+        if (airport.latitude() == null || airport.longitude() == null) {
+            throw new IllegalArgumentException("Active airport does not have coordinates for weather lookup");
+        }
+
+        JsonNode current = fetchCurrentWeather(airport.latitude(), airport.longitude());
+        WeatherInput input = weatherInputFromApi(current);
+        insertWeatherSnapshot(airport.code(), input);
+        insertEvent("INFO", "WEATHER", "Fetched live weather for " + airport.code() + " from Open-Meteo");
+        return currentWeather(airport.code());
+    }
+
     @Scheduled(fixedRateString = "${airport-simulation.tick-interval:1s}")
     @Transactional
     public void tick() {
+        if (shuttingDown) {
+            return;
+        }
         SimulationStateRow state = loadState();
         if (state == null || !state.running()) {
             return;
@@ -292,31 +382,7 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private void seedSyntheticWeather(String airportCode) {
-        LocalDateTime observedAt = LocalDateTime.now(clock).truncatedTo(ChronoUnit.MINUTES);
-        jdbcTemplate.update("""
-                insert into import_weather_snapshots (
-                    airport_id,
-                    observed_at,
-                    temperature_celsius,
-                    feels_like_celsius,
-                    wind_speed_kmh,
-                    wind_gust_kmh,
-                    wind_direction_degrees,
-                    rain_mm_per_hour,
-                    snow_mm_per_hour,
-                    hail,
-                    thunderstorm,
-                    visibility_meters,
-                    fog,
-                    cloud_coverage_percent,
-                    ceiling_meters,
-                    cloud_label,
-                    runway_surface,
-                    weather_severity
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                airportCode,
-                observedAt,
+        insertWeatherSnapshot(airportCode, new WeatherInput(
                 17.0,
                 15.0,
                 34.0,
@@ -332,7 +398,8 @@ public class SimulationFacade implements ApplicationRunner {
                 900,
                 "Low Clouds",
                 "WET",
-                WeatherSeverity.CAUTION.code());
+                WeatherSeverity.CAUTION.code()
+        ));
     }
 
     private void updateFlightState(FlightRow flight, LocalDateTime currentTime, WeatherSeverity weatherSeverity) {
@@ -485,8 +552,9 @@ public class SimulationFacade implements ApplicationRunner {
     private WeatherView currentWeather(String airportCode) {
         List<WeatherRow> rows = jdbcTemplate.query("""
                         select airport_id, observed_at, temperature_celsius, feels_like_celsius, wind_speed_kmh,
-                               wind_gust_kmh, wind_direction_degrees, visibility_meters, cloud_label,
-                               runway_surface, weather_severity
+                               wind_gust_kmh, wind_direction_degrees, rain_mm_per_hour, snow_mm_per_hour,
+                               hail, thunderstorm, visibility_meters, fog, cloud_coverage_percent,
+                               ceiling_meters, cloud_label, runway_surface, weather_severity
                         from import_weather_snapshots
                         where airport_id = ?
                         order by observed_at desc
@@ -500,7 +568,14 @@ public class SimulationFacade implements ApplicationRunner {
                         rs.getDouble("wind_speed_kmh"),
                         rs.getDouble("wind_gust_kmh"),
                         rs.getInt("wind_direction_degrees"),
+                        rs.getDouble("rain_mm_per_hour"),
+                        rs.getDouble("snow_mm_per_hour"),
+                        rs.getBoolean("hail"),
+                        rs.getBoolean("thunderstorm"),
                         rs.getInt("visibility_meters"),
+                        rs.getBoolean("fog"),
+                        rs.getInt("cloud_coverage_percent"),
+                        rs.getInt("ceiling_meters"),
                         rs.getString("cloud_label"),
                         rs.getString("runway_surface"),
                         rs.getString("weather_severity")
@@ -509,8 +584,9 @@ public class SimulationFacade implements ApplicationRunner {
         if (rows.isEmpty()) {
             rows = jdbcTemplate.query("""
                             select airport_id, observed_at, temperature_celsius, feels_like_celsius, wind_speed_kmh,
-                                   wind_gust_kmh, wind_direction_degrees, visibility_meters, cloud_label,
-                                   runway_surface, weather_severity
+                                   wind_gust_kmh, wind_direction_degrees, rain_mm_per_hour, snow_mm_per_hour,
+                                   hail, thunderstorm, visibility_meters, fog, cloud_coverage_percent,
+                                   ceiling_meters, cloud_label, runway_surface, weather_severity
                             from import_weather_snapshots
                             order by observed_at desc
                             limit 1
@@ -523,7 +599,14 @@ public class SimulationFacade implements ApplicationRunner {
                             rs.getDouble("wind_speed_kmh"),
                             rs.getDouble("wind_gust_kmh"),
                             rs.getInt("wind_direction_degrees"),
+                            rs.getDouble("rain_mm_per_hour"),
+                            rs.getDouble("snow_mm_per_hour"),
+                            rs.getBoolean("hail"),
+                            rs.getBoolean("thunderstorm"),
                             rs.getInt("visibility_meters"),
+                            rs.getBoolean("fog"),
+                            rs.getInt("cloud_coverage_percent"),
+                            rs.getInt("ceiling_meters"),
                             rs.getString("cloud_label"),
                             rs.getString("runway_surface"),
                             rs.getString("weather_severity")
@@ -538,7 +621,14 @@ public class SimulationFacade implements ApplicationRunner {
                     0.0,
                     0.0,
                     0,
+                    0.0,
+                    0.0,
+                    false,
+                    false,
                     10000,
+                    false,
+                    0,
+                    3000,
                     "Clear",
                     "DRY",
                     WeatherSeverity.NORMAL.code(),
@@ -557,7 +647,14 @@ public class SimulationFacade implements ApplicationRunner {
                 row.windSpeedKmh(),
                 row.windGustKmh(),
                 row.windDirectionDegrees(),
+                row.rainMmPerHour(),
+                row.snowMmPerHour(),
+                row.hail(),
+                row.thunderstorm(),
                 row.visibilityMeters(),
+                row.fog(),
+                row.cloudCoveragePercent(),
+                row.ceilingMeters(),
                 row.cloudLabel(),
                 row.runwaySurface(),
                 severity.code(),
@@ -568,10 +665,14 @@ public class SimulationFacade implements ApplicationRunner {
 
     private AirportView activeAirport(String airportCode) {
         List<AirportRow> airports = jdbcTemplate.query("""
-                        select id, coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-DEMO') as code,
+                        select id, coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-' || id::text) as code,
+                               ident,
                                name,
                                coalesce(nullif(municipality, ''), name) as city,
-                               coalesce(nullif(iso_country, ''), 'UNKNOWN') as country
+                               coalesce(nullif(iso_country, ''), 'UNKNOWN') as country,
+                               coalesce(nullif(type, ''), 'airport') as type,
+                               latitude_deg,
+                               longitude_deg
                         from import_airports
                         where coalesce(nullif(iata_code, ''), nullif(ident, '')) = ?
                            or iata_code = ?
@@ -582,9 +683,13 @@ public class SimulationFacade implements ApplicationRunner {
                 (rs, rowNum) -> new AirportRow(
                         rs.getLong("id"),
                         rs.getString("code"),
+                        rs.getString("ident"),
                         rs.getString("name"),
                         rs.getString("city"),
-                        rs.getString("country")
+                        rs.getString("country"),
+                        rs.getString("type"),
+                        nullableDouble(rs, "latitude_deg"),
+                        nullableDouble(rs, "longitude_deg")
                 ),
                 airportCode,
                 airportCode,
@@ -593,17 +698,30 @@ public class SimulationFacade implements ApplicationRunner {
         long runwayCount = jdbcTemplate.queryForObject("""
                 select count(*)
                 from import_runways
-                where airport_ident = ? or airport_ref::text = ?
-                """, Long.class, airport.code(), airport.code());
-        return new AirportView(airport.code(), airport.name(), airport.city(), airport.country(), runwayCount);
+                where airport_ref = ? or airport_ident = ?
+                """, Long.class, airport.id(), airport.ident());
+        return new AirportView(
+                airport.code(),
+                airport.name(),
+                airport.city(),
+                airport.country(),
+                runwayCount,
+                airport.type(),
+                airport.latitude(),
+                airport.longitude()
+        );
     }
 
     private AirportRow defaultAirport() {
         List<AirportRow> airports = jdbcTemplate.query("""
-                        select id, coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-DEMO') as code,
+                        select id, coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-' || id::text) as code,
+                               ident,
                                name,
                                coalesce(nullif(municipality, ''), name) as city,
-                               coalesce(nullif(iso_country, ''), 'UNKNOWN') as country
+                               coalesce(nullif(iso_country, ''), 'UNKNOWN') as country,
+                               coalesce(nullif(type, ''), 'airport') as type,
+                               latitude_deg,
+                               longitude_deg
                         from import_airports
                         order by id
                         limit 1
@@ -611,12 +729,16 @@ public class SimulationFacade implements ApplicationRunner {
                 (rs, rowNum) -> new AirportRow(
                         rs.getLong("id"),
                         rs.getString("code"),
+                        rs.getString("ident"),
                         rs.getString("name"),
                         rs.getString("city"),
-                        rs.getString("country")
+                        rs.getString("country"),
+                        rs.getString("type"),
+                        nullableDouble(rs, "latitude_deg"),
+                        nullableDouble(rs, "longitude_deg")
                 ));
         if (airports.isEmpty()) {
-            return new AirportRow(1L, "APT-DEMO", "Airport Demo", "Airport Demo", "Portugal");
+            return new AirportRow(1L, "APT-DEMO", "APT-DEMO", "Airport Demo", "Airport Demo", "Portugal", "airport", null, null);
         }
         return airports.getFirst();
     }
@@ -637,6 +759,256 @@ public class SimulationFacade implements ApplicationRunner {
                 select count(*) from import_weather_snapshots where airport_id = ?
                 """, Long.class, airportCode);
         return count != null && count > 0;
+    }
+
+    private AirportRow airportByCode(String airportCode) {
+        List<AirportRow> airports = jdbcTemplate.query("""
+                        select id,
+                               coalesce(nullif(iata_code, ''), nullif(ident, ''), 'APT-' || id::text) as code,
+                               ident,
+                               name,
+                               coalesce(nullif(municipality, ''), name) as city,
+                               coalesce(nullif(iso_country, ''), 'UNKNOWN') as country,
+                               coalesce(nullif(type, ''), 'airport') as type,
+                               latitude_deg,
+                               longitude_deg
+                        from import_airports
+                        where coalesce(nullif(iata_code, ''), nullif(ident, '')) = ?
+                           or iata_code = ?
+                           or ident = ?
+                        order by id
+                        limit 1
+                        """,
+                (rs, rowNum) -> new AirportRow(
+                        rs.getLong("id"),
+                        rs.getString("code"),
+                        rs.getString("ident"),
+                        rs.getString("name"),
+                        rs.getString("city"),
+                        rs.getString("country"),
+                        rs.getString("type"),
+                        nullableDouble(rs, "latitude_deg"),
+                        nullableDouble(rs, "longitude_deg")
+                ),
+                airportCode,
+                airportCode,
+                airportCode);
+        if (airports.isEmpty()) {
+            throw new IllegalArgumentException("Unknown airport code: " + airportCode);
+        }
+        return airports.getFirst();
+    }
+
+    private void insertWeatherSnapshot(String airportCode, WeatherInput input) {
+        WeatherInput weather = normalizeWeatherInput(input);
+        jdbcTemplate.update("""
+                insert into import_weather_snapshots (
+                    airport_id,
+                    observed_at,
+                    temperature_celsius,
+                    feels_like_celsius,
+                    wind_speed_kmh,
+                    wind_gust_kmh,
+                    wind_direction_degrees,
+                    rain_mm_per_hour,
+                    snow_mm_per_hour,
+                    hail,
+                    thunderstorm,
+                    visibility_meters,
+                    fog,
+                    cloud_coverage_percent,
+                    ceiling_meters,
+                    cloud_label,
+                    runway_surface,
+                    weather_severity
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                airportCode,
+                LocalDateTime.now(clock),
+                weather.temperatureCelsius(),
+                weather.feelsLikeCelsius(),
+                weather.windSpeedKmh(),
+                weather.windGustKmh(),
+                weather.windDirectionDegrees(),
+                weather.rainMmPerHour(),
+                weather.snowMmPerHour(),
+                weather.hail(),
+                weather.thunderstorm(),
+                weather.visibilityMeters(),
+                weather.fog(),
+                weather.cloudCoveragePercent(),
+                weather.ceilingMeters(),
+                weather.cloudLabel(),
+                weather.runwaySurface(),
+                weather.severityCode());
+    }
+
+    private WeatherInput normalizeWeatherInput(WeatherInput input) {
+        int windDirection = Math.floorMod(input.windDirectionDegrees(), 360);
+        int visibility = Math.max(0, input.visibilityMeters());
+        int clouds = clamp(input.cloudCoveragePercent(), 0, 100);
+        int ceiling = Math.max(0, input.ceilingMeters());
+        String cloudLabel = blankToDefault(input.cloudLabel(), cloudLabel(input.thunderstorm(), input.fog(), clouds));
+        String runwaySurface = blankToDefault(input.runwaySurface(), runwaySurface(input.rainMmPerHour(), input.snowMmPerHour(), input.hail()));
+        String severityCode = WeatherSeverity.fromCode(input.severityCode()).max(severityFor(
+                input.windSpeedKmh(),
+                input.windGustKmh(),
+                input.rainMmPerHour(),
+                input.snowMmPerHour(),
+                input.hail(),
+                input.thunderstorm(),
+                visibility,
+                input.fog(),
+                clouds
+        )).code();
+        return new WeatherInput(
+                input.temperatureCelsius(),
+                input.feelsLikeCelsius(),
+                Math.max(0.0, input.windSpeedKmh()),
+                Math.max(0.0, input.windGustKmh()),
+                windDirection,
+                Math.max(0.0, input.rainMmPerHour()),
+                Math.max(0.0, input.snowMmPerHour()),
+                input.hail(),
+                input.thunderstorm(),
+                visibility,
+                input.fog(),
+                clouds,
+                ceiling,
+                cloudLabel,
+                runwaySurface,
+                severityCode);
+    }
+
+    private JsonNode fetchCurrentWeather(double latitude, double longitude) {
+        String uri = UriComponentsBuilder.fromPath("/v1/forecast")
+                .queryParam("latitude", latitude)
+                .queryParam("longitude", longitude)
+                .queryParam("current", "temperature_2m,apparent_temperature,precipitation,rain,snowfall,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m,visibility")
+                .queryParam("wind_speed_unit", "kmh")
+                .queryParam("precipitation_unit", "mm")
+                .queryParam("timezone", "auto")
+                .build()
+                .toUriString();
+        JsonNode response = weatherClient.get()
+                .uri(uri)
+                .retrieve()
+                .body(JsonNode.class);
+        if (response == null || !response.has("current")) {
+            throw new IllegalStateException("Weather API did not return current conditions");
+        }
+        return response.path("current");
+    }
+
+    private WeatherInput weatherInputFromApi(JsonNode current) {
+        int weatherCode = current.path("weather_code").asInt(0);
+        double rain = current.path("rain").asDouble(0.0);
+        double precipitation = current.path("precipitation").asDouble(0.0);
+        double snow = current.path("snowfall").asDouble(0.0);
+        int clouds = current.path("cloud_cover").asInt(0);
+        boolean thunderstorm = weatherCode >= 95;
+        boolean fog = weatherCode == 45 || weatherCode == 48;
+        boolean hail = weatherCode == 96 || weatherCode == 99;
+        double rainAmount = Math.max(rain, precipitation - snow);
+        String severity = severityFor(
+                current.path("wind_speed_10m").asDouble(0.0),
+                current.path("wind_gusts_10m").asDouble(0.0),
+                rainAmount,
+                snow,
+                hail,
+                thunderstorm,
+                current.path("visibility").asInt(10000),
+                fog,
+                clouds
+        ).code();
+        return new WeatherInput(
+                current.path("temperature_2m").asDouble(20.0),
+                current.path("apparent_temperature").asDouble(current.path("temperature_2m").asDouble(20.0)),
+                current.path("wind_speed_10m").asDouble(0.0),
+                current.path("wind_gusts_10m").asDouble(0.0),
+                current.path("wind_direction_10m").asInt(0),
+                rainAmount,
+                snow,
+                hail,
+                thunderstorm,
+                current.path("visibility").asInt(10000),
+                fog,
+                clouds,
+                ceilingFor(clouds, fog, thunderstorm),
+                cloudLabel(thunderstorm, fog, clouds),
+                runwaySurface(rainAmount, snow, hail),
+                severity);
+    }
+
+    private WeatherSeverity severityFor(
+            double windSpeedKmh,
+            double windGustKmh,
+            double rainMmPerHour,
+            double snowMmPerHour,
+            boolean hail,
+            boolean thunderstorm,
+            int visibilityMeters,
+            boolean fog,
+            int cloudCoveragePercent
+    ) {
+        if (hail || thunderstorm || windGustKmh >= 85.0 || visibilityMeters < 800 || snowMmPerHour >= 5.0) {
+            return WeatherSeverity.GROUND_STOP;
+        }
+        if (windGustKmh >= 65.0 || windSpeedKmh >= 45.0 || visibilityMeters < 1600 || rainMmPerHour >= 8.0 || snowMmPerHour >= 1.5) {
+            return WeatherSeverity.SEVERE;
+        }
+        if (fog || windGustKmh >= 40.0 || windSpeedKmh >= 28.0 || visibilityMeters < 5000 || rainMmPerHour > 0.0 || snowMmPerHour > 0.0 || cloudCoveragePercent >= 75) {
+            return WeatherSeverity.CAUTION;
+        }
+        return WeatherSeverity.NORMAL;
+    }
+
+    private int ceilingFor(int clouds, boolean fog, boolean thunderstorm) {
+        if (fog || thunderstorm) {
+            return 400;
+        }
+        if (clouds >= 85) {
+            return 700;
+        }
+        if (clouds >= 65) {
+            return 1200;
+        }
+        if (clouds >= 35) {
+            return 2500;
+        }
+        return 5000;
+    }
+
+    private String cloudLabel(boolean thunderstorm, boolean fog, int cloudCoveragePercent) {
+        if (thunderstorm) {
+            return "Thunderstorm";
+        }
+        if (fog) {
+            return "Fog";
+        }
+        if (cloudCoveragePercent >= 85) {
+            return "Overcast";
+        }
+        if (cloudCoveragePercent >= 65) {
+            return "Broken Clouds";
+        }
+        if (cloudCoveragePercent >= 35) {
+            return "Scattered Clouds";
+        }
+        if (cloudCoveragePercent > 0) {
+            return "Few Clouds";
+        }
+        return "Clear";
+    }
+
+    private String runwaySurface(double rainMmPerHour, double snowMmPerHour, boolean hail) {
+        if (hail || snowMmPerHour > 0.0) {
+            return "CONTAMINATED";
+        }
+        if (rainMmPerHour > 0.0) {
+            return "WET";
+        }
+        return "DRY";
     }
 
     private long count(String tableName) {
@@ -740,6 +1112,26 @@ public class SimulationFacade implements ApplicationRunner {
         return properties.importDirectory().resolve(name);
     }
 
+    private static String normalizeRequiredCode(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Airport code is required");
+        }
+        return value.trim();
+    }
+
+    private static String blankToDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static Double nullableDouble(java.sql.ResultSet rs, String columnName) throws java.sql.SQLException {
+        double value = rs.getDouble(columnName);
+        return rs.wasNull() ? null : value;
+    }
+
     private record SimulationStateRow(
             String lifecycleState,
             LocalDateTime simulatedTime,
@@ -750,7 +1142,17 @@ public class SimulationFacade implements ApplicationRunner {
     ) {
     }
 
-    private record AirportRow(long id, String code, String name, String city, String country) {
+    private record AirportRow(
+            long id,
+            String code,
+            String ident,
+            String name,
+            String city,
+            String country,
+            String type,
+            Double latitude,
+            Double longitude
+    ) {
     }
 
     private record WeatherRow(
@@ -761,7 +1163,14 @@ public class SimulationFacade implements ApplicationRunner {
             double windSpeedKmh,
             double windGustKmh,
             int windDirectionDegrees,
+            double rainMmPerHour,
+            double snowMmPerHour,
+            boolean hail,
+            boolean thunderstorm,
             int visibilityMeters,
+            boolean fog,
+            int cloudCoveragePercent,
+            int ceilingMeters,
             String cloudLabel,
             String runwaySurface,
             String severityCode

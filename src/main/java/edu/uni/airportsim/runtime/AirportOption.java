@@ -1,13 +1,14 @@
 package edu.uni.airportsim.runtime;
 
-public record AirportView(
+public record AirportOption(
         String code,
+        String ident,
         String name,
         String city,
         String country,
-        long runways,
         String type,
         Double latitude,
-        Double longitude
+        Double longitude,
+        long runways
 ) {
 }

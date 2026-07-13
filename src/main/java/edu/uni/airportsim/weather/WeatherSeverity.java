@@ -33,7 +33,10 @@ public final class WeatherSeverity {
     }
 
     public static WeatherSeverity fromCode(String code) {
-        return switch (code) {
+        if (code == null) {
+            return NORMAL;
+        }
+        return switch (code.trim().toUpperCase()) {
             case "CAUTION" -> CAUTION;
             case "SEVERE" -> SEVERE;
             case "GROUND_STOP" -> GROUND_STOP;
