@@ -37,3 +37,8 @@ airport-simulation:
   passenger-load-factor: ${AIRPORT_SIMULATION_PASSENGER_LOAD_FACTOR:0.82}
   bag-rate: ${AIRPORT_SIMULATION_BAG_RATE:0.72}
   use-open-flights: ${AIRPORT_SIMULATION_USE_OPENFLIGHTS:true}
+  random-seed: ${AIRPORT_SIMULATION_RANDOM_SEED:0}
+  delay-probability: ${AIRPORT_SIMULATION_DELAY_PROBABILITY:0.08}
+  baggage-exception-probability: ${AIRPORT_SIMULATION_BAGGAGE_EXCEPTION_PROBABILITY:0.012}
+  passenger-no-show-probability: ${AIRPORT_SIMULATION_PASSENGER_NO_SHOW_PROBABILITY:0.035}
+  ground-jitter-minutes: ${AIRPORT_SIMULATION_GROUND_JITTER_MINUTES:12}

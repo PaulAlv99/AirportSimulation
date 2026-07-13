@@ -335,7 +335,11 @@ function renderOverview(snapshot) {
         ["Gate Utilization", `${number(operations.gateUtilizationPercent)}%`],
         ["Runway Queue", number(operations.runwayQueue)],
         ["Baggage Backlog", number(operations.baggageBacklog)],
-        ["Delayed Ground Tasks", number(operations.delayedGroundOps)]
+        ["Delayed Ground Tasks", number(operations.delayedGroundOps)],
+        ["Random Model", operations.stochasticMode ? "ON" : "OFF"],
+        ["Delay Probability", percent(operations.delayProbability)],
+        ["Bag Exception Probability", percent(operations.baggageExceptionProbability)],
+        ["No-show Probability", percent(operations.passengerNoShowProbability)]
     ]);
 
     elements.statusTotal.textContent = `${number(snapshot.flights.length)} flights`;
@@ -365,7 +369,9 @@ function renderOperations(snapshot) {
         ["Bags Delivered", operations.bagsDelivered],
         ["Delayed Bags", operations.bagsDelayed],
         ["Open Gates", operations.gatesOpen],
-        ["Occupied Gates", operations.gatesOccupied]
+        ["Occupied Gates", operations.gatesOccupied],
+        ["Random Seed", operations.randomSeed > 0 ? operations.randomSeed : "live"],
+        ["Ground Jitter", `${number(operations.groundJitterMinutes)} min`]
     ]);
 }
 
@@ -690,7 +696,7 @@ function countItems(items) {
     return items.map(([label, value]) => `
         <div class="count-card">
             <span>${escapeHtml(label)}</span>
-            <strong>${number(value)}</strong>
+            <strong>${displayValue(value)}</strong>
         </div>
     `).join("");
 }
@@ -750,6 +756,19 @@ function formatTime(value) {
 
 function number(value) {
     return Number(value ?? 0).toLocaleString();
+}
+
+function percent(value) {
+    const numeric = Number(value ?? 0);
+    const decimals = numeric > 0 && numeric < 0.01 ? 2 : 1;
+    return `${(numeric * 100).toFixed(decimals)}%`;
+}
+
+function displayValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return number(value);
+    }
+    return escapeHtml(value ?? "--");
 }
 
 function numberValue(input) {

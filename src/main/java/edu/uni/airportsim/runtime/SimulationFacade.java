@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.SplittableRandom;
 
 @Service
 public class SimulationFacade implements ApplicationRunner {
@@ -402,7 +403,13 @@ public class SimulationFacade implements ApplicationRunner {
                 securityQueue,
                 baggageBacklog,
                 activeGroundOps,
-                delayedGroundOps
+                delayedGroundOps,
+                stochasticMode(),
+                configuredRandomSeed(),
+                safeDelayProbability(),
+                safeBaggageExceptionProbability(),
+                safePassengerNoShowProbability(),
+                safeGroundJitterMinutes()
         );
     }
 
@@ -795,21 +802,30 @@ public class SimulationFacade implements ApplicationRunner {
             sourceRows = fallbackRouteTemplateRows(activeAirportCode);
         }
 
+        SplittableRandom random = stochasticRandom("flights-" + activeAirportCode + "-" + targetFlights);
         List<Object[]> rows = new ArrayList<>();
         int spacingMinutes = Math.max(3, Math.min(12, 1440 / Math.max(1, targetFlights)));
         WeatherSeverity weatherSeverity = WeatherSeverity.fromCode(currentWeather(activeAirportCode).severityCode());
+        int scheduleJitterWindow = Math.max(1, spacingMinutes / 2);
         for (int index = 0; index < targetFlights; index++) {
-            RouteTemplateRow template = sourceRows.get(index % sourceRows.size());
-            LocalDateTime departure = baseTime.minusMinutes(150).plusMinutes(index * (long) spacingMinutes + (index % 5L));
-            long durationMinutes = Math.max(35L, Math.round(durationHoursFor(template.sourceAirport(), template.destinationAirport(), template.aircraftCode(), index) * 60.0));
+            RouteTemplateRow template = sourceRows.get(random.nextInt(sourceRows.size()));
+            int scheduleJitter = random.nextInt(-scheduleJitterWindow, scheduleJitterWindow + 1);
+            LocalDateTime departure = baseTime.minusMinutes(150).plusMinutes(index * (long) spacingMinutes + scheduleJitter);
+            long durationMinutes = Math.max(35L, Math.round(durationHoursFor(
+                    template.sourceAirport(),
+                    template.destinationAirport(),
+                    template.aircraftCode(),
+                    index,
+                    random) * 60.0));
             LocalDateTime arrival = departure.plusMinutes(durationMinutes);
-            int delayMinutes = initialDelayMinutes(weatherSeverity, index);
-            int passengerCount = passengerCountFor(template.aircraftCode(), index);
-            int baggageCount = baggageCountFor(passengerCount, index);
+            int delayMinutes = initialDelayMinutes(weatherSeverity, random);
+            int passengerCount = passengerCountFor(template.aircraftCode(), random);
+            int baggageCount = baggageCountFor(passengerCount, random);
             String status = statusFor(departure, arrival, delayMinutes, baseTime);
             if (delayMinutes > 0 && "BOARDING".equals(status)) {
                 status = "DELAYED";
             }
+            String delayReason = delayMinutes > 0 ? delayReasonFor(weatherSeverity, random) : null;
             rows.add(new Object[] {
                     template.rowId(),
                     flightNumberFor(template, index),
@@ -822,14 +838,14 @@ public class SimulationFacade implements ApplicationRunner {
                     delayMinutes,
                     gateFor(index, gateCountFor(targetFlights)),
                     runwayFor(index),
-                    delayMinutes > 0 ? "Weather delay during seed" : null,
+                    delayReason,
                     template.routeSource(),
                     template.aircraftCode(),
                     template.aircraftName(),
                     passengerCount,
                     baggageCount,
                     directionFor(template, activeAirportCode),
-                    delayMinutes > 0 ? "Weather delay during seed" : null,
+                    delayReason,
                     LocalDateTime.now(clock)
             });
         }
@@ -941,10 +957,10 @@ public class SimulationFacade implements ApplicationRunner {
         List<Object[]> baggage = new ArrayList<>();
         List<Object[]> groundOps = new ArrayList<>();
         LocalDateTime now = LocalDateTime.now(clock);
+        SplittableRandom random = stochasticRandom("operations-" + targetFlights);
         for (FlightRow flight : flights) {
-            PassengerState passengerState = passengerStateFor(flight.status());
-            BaggageStateRow baggageState = baggageStateFor(flight.status());
             for (int index = 0; index < flight.passengerCount(); index++) {
+                PassengerState passengerState = passengerStateFor(flight.status(), random);
                 boolean hasBag = index < flight.baggageCount();
                 passengers.add(new Object[] {
                         flight.id(),
@@ -959,6 +975,7 @@ public class SimulationFacade implements ApplicationRunner {
                 });
             }
             for (int index = 0; index < flight.baggageCount(); index++) {
+                BaggageStateRow baggageState = baggageStateFor(flight.status(), random);
                 baggage.add(new Object[] {
                         flight.id(),
                         null,
@@ -969,7 +986,7 @@ public class SimulationFacade implements ApplicationRunner {
                         now
                 });
             }
-            addGroundOperations(groundOps, flight, now);
+            addGroundOperations(groundOps, flight, now, random);
         }
         batchUpdate("""
                 insert into simulation_passengers (
@@ -1034,26 +1051,42 @@ public class SimulationFacade implements ApplicationRunner {
                 """, rows);
     }
 
-    private void addGroundOperations(List<Object[]> rows, FlightRow flight, LocalDateTime now) {
-        addGroundOperation(rows, flight, "CHECK_IN", flight.departureTime().minusMinutes(120), flight.departureTime().minusMinutes(45), now);
-        addGroundOperation(rows, flight, "SECURITY", flight.departureTime().minusMinutes(100), flight.departureTime().minusMinutes(25), now);
-        addGroundOperation(rows, flight, "CLEANING", flight.departureTime().minusMinutes(70), flight.departureTime().minusMinutes(35), now);
-        addGroundOperation(rows, flight, "FUELING", flight.departureTime().minusMinutes(65), flight.departureTime().minusMinutes(25), now);
-        addGroundOperation(rows, flight, "CATERING", flight.departureTime().minusMinutes(55), flight.departureTime().minusMinutes(20), now);
-        addGroundOperation(rows, flight, "BAGGAGE_LOADING", flight.departureTime().minusMinutes(50), flight.departureTime().minusMinutes(10), now);
-        addGroundOperation(rows, flight, "BOARDING", flight.departureTime().minusMinutes(35), flight.departureTime(), now);
+    private void addGroundOperations(List<Object[]> rows, FlightRow flight, LocalDateTime now, SplittableRandom random) {
+        addGroundOperation(rows, flight, "CHECK_IN", flight.departureTime().minusMinutes(120), flight.departureTime().minusMinutes(45), now, random);
+        addGroundOperation(rows, flight, "SECURITY", flight.departureTime().minusMinutes(100), flight.departureTime().minusMinutes(25), now, random);
+        addGroundOperation(rows, flight, "CLEANING", flight.departureTime().minusMinutes(70), flight.departureTime().minusMinutes(35), now, random);
+        addGroundOperation(rows, flight, "FUELING", flight.departureTime().minusMinutes(65), flight.departureTime().minusMinutes(25), now, random);
+        addGroundOperation(rows, flight, "CATERING", flight.departureTime().minusMinutes(55), flight.departureTime().minusMinutes(20), now, random);
+        addGroundOperation(rows, flight, "BAGGAGE_LOADING", flight.departureTime().minusMinutes(50), flight.departureTime().minusMinutes(10), now, random);
+        addGroundOperation(rows, flight, "BOARDING", flight.departureTime().minusMinutes(35), flight.departureTime(), now, random);
     }
 
-    private void addGroundOperation(List<Object[]> rows, FlightRow flight, String operationType, LocalDateTime startedAt, LocalDateTime dueAt, LocalDateTime now) {
+    private void addGroundOperation(
+            List<Object[]> rows,
+            FlightRow flight,
+            String operationType,
+            LocalDateTime startedAt,
+            LocalDateTime dueAt,
+            LocalDateTime now,
+            SplittableRandom random
+    ) {
+        LocalDateTime adjustedStart = jitter(startedAt, random);
+        LocalDateTime adjustedDue = jitter(dueAt, random);
+        if (!adjustedDue.isAfter(adjustedStart.plusMinutes(5))) {
+            adjustedDue = adjustedStart.plusMinutes(5);
+        }
+        int randomDelay = eventOccurs(random, safeDelayProbability() / 3.0) ? random.nextInt(5, 26) : 0;
         String status;
         LocalDateTime completedAt = null;
         if ("CANCELLED".equals(flight.status())) {
             status = "CANCELLED";
-        } else if (now.isBefore(startedAt)) {
+        } else if (now.isBefore(adjustedStart)) {
             status = "PENDING";
-        } else if (!now.isBefore(dueAt)) {
+        } else if (!now.isBefore(adjustedDue.plusMinutes(randomDelay))) {
             status = "COMPLETED";
             completedAt = now;
+        } else if (randomDelay > 0) {
+            status = "DELAYED";
         } else {
             status = "ACTIVE";
         }
@@ -1062,10 +1095,10 @@ public class SimulationFacade implements ApplicationRunner {
                 flight.gate(),
                 operationType,
                 status,
-                startedAt,
-                dueAt,
+                adjustedStart,
+                adjustedDue,
                 completedAt,
-                0,
+                randomDelay,
                 now
         });
     }
@@ -1221,8 +1254,64 @@ public class SimulationFacade implements ApplicationRunner {
             }
         }
         updateGroundOperations(currentTime, weatherSeverity);
+        applyRandomOperationalNoise(currentTime, weatherSeverity);
         updateGates(currentTime);
         refreshResourceQueues(currentTime);
+    }
+
+    private void applyRandomOperationalNoise(LocalDateTime currentTime, WeatherSeverity weatherSeverity) {
+        SplittableRandom random = stochasticRandom("tick-" + currentTime.truncatedTo(ChronoUnit.MINUTES) + "-" + weatherSeverity.code());
+        double flightIncidentProbability = Math.min(0.35, (safeDelayProbability() / 8.0) + (weatherSeverity.rank() * 0.015));
+        if (eventOccurs(random, flightIncidentProbability)) {
+            List<Long> candidates = jdbcTemplate.query("""
+                    select id
+                    from simulation_flights
+                    where status in ('SCHEDULED', 'CHECK_IN_OPEN', 'BOARDING')
+                    order by departure_time, id
+                    limit 80
+                    """, (rs, rowNum) -> rs.getLong("id"));
+            if (!candidates.isEmpty()) {
+                long flightId = candidates.get(random.nextInt(candidates.size()));
+                int addedDelay = random.nextInt(5, weatherSeverity.rank() >= WeatherSeverity.SEVERE.rank() ? 46 : 21);
+                String reason = delayReasonFor(weatherSeverity, random);
+                jdbcTemplate.update("""
+                        update simulation_flights
+                        set status = 'DELAYED',
+                            delay_minutes = delay_minutes + ?,
+                            delay_reason = ?,
+                            weather_notes = ?,
+                            last_updated = ?
+                        where id = ?
+                        """,
+                        addedDelay,
+                        reason,
+                        reason,
+                        LocalDateTime.now(clock),
+                        flightId);
+                insertEvent("WARN", "OPERATIONS", "Probabilistic incident delayed flight " + flightId + " by " + addedDelay + " minutes");
+            }
+        }
+
+        double baggageIncidentProbability = Math.min(0.25, (safeBaggageExceptionProbability() * 2.0) + (weatherSeverity.rank() * 0.01));
+        if (eventOccurs(random, baggageIncidentProbability)) {
+            int affectedBags = random.nextInt(1, Math.max(2, Math.min(25, targetFlightCount() / 4 + 2)));
+            jdbcTemplate.update("""
+                    update simulation_baggage
+                    set status = 'DELAYED',
+                        exception_reason = coalesce(exception_reason, ?),
+                        last_updated = ?
+                    where id in (
+                        select id
+                        from simulation_baggage
+                        where status in ('REGISTERED', 'SCREENED', 'LOADED', 'IN_TRANSIT')
+                        order by last_updated desc, id
+                        limit ?
+                    )
+                    """,
+                    "Probabilistic baggage handling exception",
+                    LocalDateTime.now(clock),
+                    affectedBags);
+        }
     }
 
     private void updateGroundOperations(LocalDateTime currentTime, WeatherSeverity weatherSeverity) {
@@ -2265,16 +2354,25 @@ public class SimulationFacade implements ApplicationRunner {
         return "TURNAROUND";
     }
 
-    private double durationHoursFor(String sourceAirport, String destinationAirport, String aircraftCode, int index) {
+    private double durationHoursFor(
+            String sourceAirport,
+            String destinationAirport,
+            String aircraftCode,
+            int index,
+            SplittableRandom random
+    ) {
         AirportRow source = airportByCodeOrNull(sourceAirport);
         AirportRow destination = airportByCodeOrNull(destinationAirport);
+        double baseDuration;
         if (source != null && destination != null
                 && source.latitude() != null && source.longitude() != null
                 && destination.latitude() != null && destination.longitude() != null) {
             double distanceKm = haversineKm(source.latitude(), source.longitude(), destination.latitude(), destination.longitude());
-            return clampDouble((distanceKm / cruiseSpeedKmh(aircraftCode)) + 0.45, 0.6, 14.0);
+            baseDuration = (distanceKm / cruiseSpeedKmh(aircraftCode)) + 0.45;
+        } else {
+            baseDuration = 1.0 + ((index % 9) * 0.22);
         }
-        return 1.0 + ((index % 9) * 0.22);
+        return clampDouble(baseDuration + triangular(random) * 0.35, 0.55, 14.5);
     }
 
     private AirportRow airportByCodeOrNull(String airportCode) {
@@ -2306,10 +2404,10 @@ public class SimulationFacade implements ApplicationRunner {
         return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    private int passengerCountFor(String aircraftCode, int index) {
+    private int passengerCountFor(String aircraftCode, SplittableRandom random) {
         int capacity = aircraftCapacity(aircraftCode);
-        double variation = 0.88 + ((index % 7) * 0.035);
-        return Math.max(18, (int) Math.round(capacity * safeLoadFactor() * variation));
+        double loadFactor = clampDouble(safeLoadFactor() + triangular(random) * 0.24, 0.25, 1.0);
+        return clamp((int) Math.round(capacity * loadFactor), 18, capacity);
     }
 
     private int aircraftCapacity(String aircraftCode) {
@@ -2341,22 +2439,52 @@ public class SimulationFacade implements ApplicationRunner {
         return 150;
     }
 
-    private int baggageCountFor(int passengerCount, int index) {
-        double variation = 0.92 + ((index % 5) * 0.04);
-        return Math.max(0, (int) Math.round(passengerCount * safeBagRate() * variation));
+    private int baggageCountFor(int passengerCount, SplittableRandom random) {
+        int bags = 0;
+        double bagProbability = clampDouble(safeBagRate() + triangular(random) * 0.16, 0.0, 1.0);
+        double secondBagProbability = bagProbability * 0.06;
+        for (int index = 0; index < passengerCount; index++) {
+            if (eventOccurs(random, bagProbability)) {
+                bags++;
+            }
+            if (eventOccurs(random, secondBagProbability)) {
+                bags++;
+            }
+        }
+        return bags;
     }
 
-    private int initialDelayMinutes(WeatherSeverity severity, int index) {
-        if (severity.rank() >= WeatherSeverity.GROUND_STOP.rank() && index % 3 == 0) {
-            return 45;
+    private int initialDelayMinutes(WeatherSeverity severity, SplittableRandom random) {
+        double probability = safeDelayProbability();
+        if (severity.rank() >= WeatherSeverity.CAUTION.rank()) {
+            probability += 0.12;
         }
-        if (severity.rank() >= WeatherSeverity.SEVERE.rank() && index % 4 == 0) {
-            return 25;
+        if (severity.rank() >= WeatherSeverity.SEVERE.rank()) {
+            probability += 0.20;
         }
-        if (severity.rank() >= WeatherSeverity.CAUTION.rank() && index % 7 == 0) {
-            return 10;
+        if (severity.rank() >= WeatherSeverity.GROUND_STOP.rank()) {
+            probability += 0.35;
         }
-        return 0;
+        if (!eventOccurs(random, clampDouble(probability, 0.0, 0.95))) {
+            return 0;
+        }
+        int baseDelay = severity.rank() >= WeatherSeverity.SEVERE.rank() ? 18 : 8;
+        return baseDelay + random.nextInt(0, 46);
+    }
+
+    private String delayReasonFor(WeatherSeverity severity, SplittableRandom random) {
+        if (severity.rank() >= WeatherSeverity.CAUTION.rank() && eventOccurs(random, 0.55)) {
+            return "Weather impact: " + severity.label().toLowerCase(Locale.ROOT);
+        }
+        String[] reasons = {
+                "ATC flow management",
+                "Late inbound aircraft",
+                "Gate congestion",
+                "Crew connection variance",
+                "Security queue pressure",
+                "Baggage loading backlog"
+        };
+        return reasons[random.nextInt(reasons.length)];
     }
 
     private int targetFlightCount() {
@@ -2377,6 +2505,74 @@ public class SimulationFacade implements ApplicationRunner {
 
     private double safeBagRate() {
         return clampDouble(properties.getBagRate(), 0.0, 1.4);
+    }
+
+    private boolean stochasticMode() {
+        return safeDelayProbability() > 0.0
+                || safeBaggageExceptionProbability() > 0.0
+                || safePassengerNoShowProbability() > 0.0
+                || safeGroundJitterMinutes() > 0;
+    }
+
+    private long configuredRandomSeed() {
+        return Math.max(0L, properties.getRandomSeed());
+    }
+
+    private boolean hasConfiguredRandomSeed() {
+        return configuredRandomSeed() > 0L;
+    }
+
+    private double safeDelayProbability() {
+        return clampDouble(properties.getDelayProbability(), 0.0, 1.0);
+    }
+
+    private double safeBaggageExceptionProbability() {
+        return clampDouble(properties.getBaggageExceptionProbability(), 0.0, 1.0);
+    }
+
+    private double safePassengerNoShowProbability() {
+        return clampDouble(properties.getPassengerNoShowProbability(), 0.0, 1.0);
+    }
+
+    private int safeGroundJitterMinutes() {
+        return clamp(properties.getGroundJitterMinutes(), 0, 120);
+    }
+
+    private SplittableRandom stochasticRandom(String salt) {
+        long baseSeed = hasConfiguredRandomSeed()
+                ? configuredRandomSeed()
+                : System.nanoTime() ^ LocalDateTime.now(clock).toString().hashCode();
+        return new SplittableRandom(mixSeed(baseSeed, salt));
+    }
+
+    private long mixSeed(long seed, String salt) {
+        long value = seed ^ 0x9E3779B97F4A7C15L;
+        String normalizedSalt = blankToDefault(salt, "simulation");
+        for (int index = 0; index < normalizedSalt.length(); index++) {
+            value ^= normalizedSalt.charAt(index);
+            value *= 0xBF58476D1CE4E5B9L;
+            value ^= value >>> 27;
+        }
+        value ^= value >>> 30;
+        value *= 0x94D049BB133111EBL;
+        value ^= value >>> 31;
+        return value;
+    }
+
+    private boolean eventOccurs(SplittableRandom random, double probability) {
+        return random.nextDouble() < clampDouble(probability, 0.0, 1.0);
+    }
+
+    private double triangular(SplittableRandom random) {
+        return ((random.nextDouble() + random.nextDouble() + random.nextDouble()) / 3.0) - 0.5;
+    }
+
+    private LocalDateTime jitter(LocalDateTime value, SplittableRandom random) {
+        int jitterMinutes = safeGroundJitterMinutes();
+        if (jitterMinutes == 0) {
+            return value;
+        }
+        return value.plusMinutes(random.nextInt(-jitterMinutes, jitterMinutes + 1));
     }
 
     private int gateCountFor(int targetFlights) {
@@ -2407,6 +2603,37 @@ public class SimulationFacade implements ApplicationRunner {
         };
     }
 
+    private PassengerState passengerStateFor(String flightStatus, SplittableRandom random) {
+        PassengerState base = passengerStateFor(flightStatus);
+        if (base.missedConnection()) {
+            return base;
+        }
+        if (eventOccurs(random, safePassengerNoShowProbability())) {
+            return new PassengerState("MISSED_CONNECTION", base.checkedIn(), base.securityCleared(), false, true);
+        }
+        if (base.boarded()) {
+            return base;
+        }
+        return switch (flightStatus) {
+            case "CHECK_IN_OPEN" -> eventOccurs(random, 0.22)
+                    ? new PassengerState("BOOKED", false, false, false, false)
+                    : base;
+            case "BOARDING" -> {
+                if (eventOccurs(random, 0.10)) {
+                    yield new PassengerState("CHECKED_IN", true, false, false, false);
+                }
+                if (eventOccurs(random, 0.18)) {
+                    yield new PassengerState("WAITING", true, true, false, false);
+                }
+                yield base;
+            }
+            case "DELAYED" -> eventOccurs(random, 0.15)
+                    ? new PassengerState("CHECKED_IN", true, false, false, false)
+                    : base;
+            default -> base;
+        };
+    }
+
     private BaggageStateRow baggageStateFor(String flightStatus) {
         return switch (flightStatus) {
             case "CHECK_IN_OPEN" -> new BaggageStateRow("SCREENED", null);
@@ -2416,6 +2643,30 @@ public class SimulationFacade implements ApplicationRunner {
             case "ARRIVED" -> new BaggageStateRow("DELIVERED", null);
             case "CANCELLED" -> new BaggageStateRow("DELAYED", "Flight cancelled");
             default -> new BaggageStateRow("REGISTERED", null);
+        };
+    }
+
+    private BaggageStateRow baggageStateFor(String flightStatus, SplittableRandom random) {
+        BaggageStateRow base = baggageStateFor(flightStatus);
+        if (eventOccurs(random, safeBaggageExceptionProbability())) {
+            return eventOccurs(random, 0.12)
+                    ? new BaggageStateRow("LOST", "Probabilistic baggage exception")
+                    : new BaggageStateRow("DELAYED", "Probabilistic baggage exception");
+        }
+        return switch (flightStatus) {
+            case "CHECK_IN_OPEN" -> eventOccurs(random, 0.20)
+                    ? new BaggageStateRow("REGISTERED", null)
+                    : base;
+            case "BOARDING" -> eventOccurs(random, 0.25)
+                    ? new BaggageStateRow("SCREENED", null)
+                    : base;
+            case "DEPARTED" -> eventOccurs(random, 0.08)
+                    ? new BaggageStateRow("LOADED", null)
+                    : base;
+            case "ARRIVED" -> eventOccurs(random, 0.04)
+                    ? new BaggageStateRow("IN_TRANSIT", null)
+                    : base;
+            default -> base;
         };
     }
 

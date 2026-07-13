@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,6 +115,11 @@ class SimulationApiIT {
         registry.add("airport-simulation.passenger-load-factor", () -> 0.8);
         registry.add("airport-simulation.bag-rate", () -> 0.7);
         registry.add("airport-simulation.use-open-flights", () -> true);
+        registry.add("airport-simulation.random-seed", () -> 12345L);
+        registry.add("airport-simulation.delay-probability", () -> 0.75);
+        registry.add("airport-simulation.baggage-exception-probability", () -> 0.5);
+        registry.add("airport-simulation.passenger-no-show-probability", () -> 0.2);
+        registry.add("airport-simulation.ground-jitter-minutes", () -> 20);
         registry.add("airport-simulation.tick-interval", () -> "1h");
         registry.add("server.servlet.context-path", () -> "/airport-simulation");
     }
@@ -131,6 +138,9 @@ class SimulationApiIT {
         assertThat(snapshot.path("operations").path("passengersTotal").asLong()).isGreaterThan(0L);
         assertThat(snapshot.path("operations").path("baggageTotal").asLong()).isGreaterThan(0L);
         assertThat(snapshot.path("operations").path("gatesTotal").asLong()).isGreaterThan(0L);
+        assertThat(snapshot.path("operations").path("stochasticMode").asBoolean()).isTrue();
+        assertThat(snapshot.path("operations").path("randomSeed").asLong()).isEqualTo(12345L);
+        assertThat(snapshot.path("operations").path("delayProbability").asDouble()).isEqualTo(0.75);
 
         ResponseEntity<String> airports = restTemplate.getForEntity(baseUrl() + "/api/airports?q=porto&limit=10", String.class);
         assertThat(airports.getStatusCode().is2xxSuccessful()).isTrue();
@@ -182,6 +192,21 @@ class SimulationApiIT {
 
         post("/api/control/start", null);
         assertThat(snapshot().path("running").asBoolean()).isTrue();
+    }
+
+    @Test
+    void seededProbabilitiesCreateBoundedRandomizedOperations() throws Exception {
+        JsonNode snapshot = snapshot();
+        Set<Integer> passengerCounts = new HashSet<>();
+        for (JsonNode flight : snapshot.path("flights")) {
+            passengerCounts.add(flight.path("passengerCount").asInt());
+        }
+        assertThat(passengerCounts.size()).isGreaterThan(1);
+
+        JsonNode operations = snapshot.path("operations");
+        assertThat(operations.path("bagsDelayed").asLong() + operations.path("bagsLost").asLong()).isGreaterThan(0L);
+        assertThat(operations.path("passengersMissedConnections").asLong()).isGreaterThan(0L);
+        assertThat(operations.path("groundJitterMinutes").asInt()).isEqualTo(20);
     }
 
     @Test

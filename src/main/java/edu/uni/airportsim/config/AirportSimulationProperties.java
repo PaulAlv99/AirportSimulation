@@ -18,6 +18,11 @@ public class AirportSimulationProperties {
     private double passengerLoadFactor = 0.82;
     private double bagRate = 0.72;
     private boolean useOpenFlights = true;
+    private long randomSeed = 0L;
+    private double delayProbability = 0.08;
+    private double baggageExceptionProbability = 0.012;
+    private double passengerNoShowProbability = 0.035;
+    private int groundJitterMinutes = 12;
 
     public Path getDataDir() {
         return dataDir;
@@ -105,6 +110,46 @@ public class AirportSimulationProperties {
 
     public void setUseOpenFlights(boolean useOpenFlights) {
         this.useOpenFlights = useOpenFlights;
+    }
+
+    public long getRandomSeed() {
+        return randomSeed;
+    }
+
+    public void setRandomSeed(long randomSeed) {
+        this.randomSeed = randomSeed;
+    }
+
+    public double getDelayProbability() {
+        return delayProbability;
+    }
+
+    public void setDelayProbability(double delayProbability) {
+        this.delayProbability = delayProbability;
+    }
+
+    public double getBaggageExceptionProbability() {
+        return baggageExceptionProbability;
+    }
+
+    public void setBaggageExceptionProbability(double baggageExceptionProbability) {
+        this.baggageExceptionProbability = baggageExceptionProbability;
+    }
+
+    public double getPassengerNoShowProbability() {
+        return passengerNoShowProbability;
+    }
+
+    public void setPassengerNoShowProbability(double passengerNoShowProbability) {
+        this.passengerNoShowProbability = passengerNoShowProbability;
+    }
+
+    public int getGroundJitterMinutes() {
+        return groundJitterMinutes;
+    }
+
+    public void setGroundJitterMinutes(int groundJitterMinutes) {
+        this.groundJitterMinutes = groundJitterMinutes;
     }
 
     public Path importDirectory() {

@@ -34,6 +34,12 @@ public record OperationSummary(
         long securityQueue,
         long baggageBacklog,
         long activeGroundOps,
-        long delayedGroundOps
+        long delayedGroundOps,
+        boolean stochasticMode,
+        long randomSeed,
+        double delayProbability,
+        double baggageExceptionProbability,
+        double passengerNoShowProbability,
+        int groundJitterMinutes
 ) {
 }

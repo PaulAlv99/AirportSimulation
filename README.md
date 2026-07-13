@@ -79,9 +79,15 @@ Useful runtime variables:
 - `AIRPORT_SIMULATION_PASSENGER_LOAD_FACTOR=0.82`
 - `AIRPORT_SIMULATION_BAG_RATE=0.72`
 - `AIRPORT_SIMULATION_USE_OPENFLIGHTS=true`
+- `AIRPORT_SIMULATION_RANDOM_SEED=0` uses live randomness; set a positive number for repeatable generated days
+- `AIRPORT_SIMULATION_DELAY_PROBABILITY=0.08`
+- `AIRPORT_SIMULATION_BAGGAGE_EXCEPTION_PROBABILITY=0.012`
+- `AIRPORT_SIMULATION_PASSENGER_NO_SHOW_PROBABILITY=0.035`
+- `AIRPORT_SIMULATION_GROUND_JITTER_MINUTES=12`
 
 ## Notes
 
 - The dashboard polls the backend once per second.
 - The simulation starts automatically by default.
+- Flight loads, bag outcomes, no-shows, ground-task timing, and tick incidents use bounded probabilistic generation.
 - The web UI uses relative paths so it can live behind a nested ProjectsShowcase route.
