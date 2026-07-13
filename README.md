@@ -53,10 +53,11 @@ java -jar target/airport-simulation-1.0.0.jar --cli
 ## Run with Docker
 
 ```bash
+docker network create proxy
 docker compose up --build
 ```
 
-The compose stack starts PostgreSQL and the app together. The application expects its data mount at `/app/data`, so the repository `data/` directory is mounted into the container.
+The compose stack starts PostgreSQL and the app together. It is meant to sit behind a shared reverse proxy on the external `proxy` network, so the app container only exposes port `8080` internally. The application expects its data mount at `/app/data`, so the repository `data/` directory is mounted into the container.
 
 ## Notes
 

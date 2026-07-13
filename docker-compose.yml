@@ -1,27 +1,29 @@
 services:
-  postgres:
+  db:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: airport_simulation
       POSTGRES_USER: airport
       POSTGRES_PASSWORD: airport
-    ports:
-      - "5432:5432"
-    volumes:
-      - airport-simulation-postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U airport -d airport_simulation"]
       interval: 5s
       timeout: 5s
       retries: 20
+    volumes:
+      - airport-simulation-postgres:/var/lib/postgresql/data
 
   airport-simulation:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/airport_simulation
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/airport_simulation
       SPRING_DATASOURCE_USERNAME: airport
       SPRING_DATASOURCE_PASSWORD: airport
       AIRPORT_SIMULATION_DATA_DIR: /app/data
@@ -29,12 +31,21 @@ services:
       AIRPORT_SIMULATION_DEMO_FLIGHT_COUNT: "12"
       AIRPORT_SIMULATION_FLIGHT_SEED_LIMIT: "24"
       SERVER_SERVLET_CONTEXT_PATH: /projects/airport-simulation
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:ro
       - ./logs:/app/logs
       - ./saves:/app/saves
+    networks:
+      default:
+      proxy:
+        aliases:
+          - airport-simulation
 
 volumes:
   airport-simulation-postgres:
+
+networks:
+  proxy:
+    external: true
