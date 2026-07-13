@@ -8,7 +8,7 @@ Airport Simulation is now a Spring Boot web app with a live dashboard backed by 
 - imports OpenFlights route, airline, and aircraft templates from `data/import/openflights/`
 - seeds PostgreSQL through Flyway and a startup bootstrapper
 - runs the simulation independently on a scheduler
-- exposes a browser operations dashboard at `/airport-simulation/`
+- exposes a browser operations dashboard at `/projects/airport-simulation/`
 - generates route-aware flights, passengers, baggage, gates, ground tasks, and queues
 - keeps logs under `logs/` and save files under `saves/`
 
@@ -54,7 +54,7 @@ java -jar target/airport-simulation-1.0.0.jar
 
 Open the app at:
 
-`http://localhost:8080/airport-simulation/`
+`http://localhost:8080/projects/airport-simulation/`
 
 CLI mode is still available:
 
