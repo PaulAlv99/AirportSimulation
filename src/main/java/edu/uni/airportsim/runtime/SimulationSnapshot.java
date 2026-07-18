@@ -10,6 +10,8 @@ public record SimulationSnapshot(
         String multiplier,
         AirportView airport,
         WeatherView weather,
+        SimulationSettingsView settings,
+        SimulationGenerationView generation,
         ImportCounts counts,
         OperationSummary operations,
         List<FlightView> flights,

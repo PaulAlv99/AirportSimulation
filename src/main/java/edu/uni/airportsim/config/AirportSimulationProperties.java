@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.LocalTime;
 
 @ConfigurationProperties(prefix = "airport-simulation")
 public class AirportSimulationProperties {
@@ -19,6 +20,11 @@ public class AirportSimulationProperties {
     private double bagRate = 0.72;
     private boolean useOpenFlights = true;
     private long randomSeed = 0L;
+    private LocalTime operatingStartTime = LocalTime.of(5, 0);
+    private LocalTime operatingEndTime = LocalTime.of(23, 0);
+    private double staffingMultiplier = 1.0;
+    private int planningHorizonMinutes = 180;
+    private int retentionDays = 7;
     private double delayProbability = 0.08;
     private double baggageExceptionProbability = 0.012;
     private double passengerNoShowProbability = 0.035;
@@ -118,6 +124,46 @@ public class AirportSimulationProperties {
 
     public void setRandomSeed(long randomSeed) {
         this.randomSeed = randomSeed;
+    }
+
+    public LocalTime getOperatingStartTime() {
+        return operatingStartTime;
+    }
+
+    public void setOperatingStartTime(LocalTime operatingStartTime) {
+        this.operatingStartTime = operatingStartTime;
+    }
+
+    public LocalTime getOperatingEndTime() {
+        return operatingEndTime;
+    }
+
+    public void setOperatingEndTime(LocalTime operatingEndTime) {
+        this.operatingEndTime = operatingEndTime;
+    }
+
+    public double getStaffingMultiplier() {
+        return staffingMultiplier;
+    }
+
+    public void setStaffingMultiplier(double staffingMultiplier) {
+        this.staffingMultiplier = staffingMultiplier;
+    }
+
+    public int getPlanningHorizonMinutes() {
+        return planningHorizonMinutes;
+    }
+
+    public void setPlanningHorizonMinutes(int planningHorizonMinutes) {
+        this.planningHorizonMinutes = planningHorizonMinutes;
+    }
+
+    public int getRetentionDays() {
+        return retentionDays;
+    }
+
+    public void setRetentionDays(int retentionDays) {
+        this.retentionDays = retentionDays;
     }
 
     public double getDelayProbability() {

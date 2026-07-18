@@ -151,6 +151,61 @@
                 </div>
                 <div class="count-grid" id="operations-kpis"></div>
             </article>
+
+            <article class="panel panel-span">
+                <div class="panel-head">
+                    <h2>Operating Window</h2>
+                    <span class="panel-note" id="generation-note">--</span>
+                </div>
+                <div class="count-grid generation-grid" id="generation-grid"></div>
+                <form id="settings-form" class="settings-form">
+                    <label>Open
+                        <input name="operatingStartTime" type="time" step="60" required>
+                    </label>
+                    <label>Close
+                        <input name="operatingEndTime" type="time" step="60" required>
+                    </label>
+                    <label>Traffic Profile
+                        <input name="trafficProfile" type="text" required>
+                    </label>
+                    <label>Target Flights
+                        <input name="targetDailyFlights" type="number" min="1" max="1000" step="1" required>
+                    </label>
+                    <label>Load Factor
+                        <input name="passengerLoadFactor" type="number" min="0" max="1.5" step="0.01" required>
+                    </label>
+                    <label>Bag Rate
+                        <input name="bagRate" type="number" min="0" max="2" step="0.01" required>
+                    </label>
+                    <label>Staffing Multiplier
+                        <input name="staffingMultiplier" type="number" min="0.5" max="3" step="0.1" required>
+                    </label>
+                    <label>Delay Probability
+                        <input name="delayProbability" type="number" min="0" max="1" step="0.01" required>
+                    </label>
+                    <label>Baggage Exception
+                        <input name="baggageExceptionProbability" type="number" min="0" max="1" step="0.01" required>
+                    </label>
+                    <label>No-show Probability
+                        <input name="passengerNoShowProbability" type="number" min="0" max="1" step="0.01" required>
+                    </label>
+                    <label>Ground Jitter
+                        <input name="groundJitterMinutes" type="number" min="0" max="120" step="1" required>
+                    </label>
+                    <label>Planning Horizon
+                        <input name="planningHorizonMinutes" type="number" min="30" max="720" step="1" required>
+                    </label>
+                    <label>Retention Days
+                        <input name="retentionDays" type="number" min="1" max="30" step="1" required>
+                    </label>
+                    <label>Random Seed
+                        <input name="randomSeed" type="number" min="0" step="1" required>
+                    </label>
+                    <div class="form-actions">
+                        <button class="button primary" type="submit"><i data-lucide="save"></i><span>Save Settings</span></button>
+                    </div>
+                </form>
+            </article>
         </div>
     </section>
 

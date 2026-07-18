@@ -389,6 +389,10 @@ svg {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.generation-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .detail-item,
 .status-card,
 .count-card,
@@ -499,7 +503,8 @@ svg {
 }
 
 .weather-form label,
-.inline-form label {
+.inline-form label,
+.settings-form label {
     display: grid;
     gap: 0.35rem;
     color: var(--muted);
@@ -509,9 +514,19 @@ svg {
 .weather-form label input,
 .weather-form label select,
 .inline-form label input,
-.inline-form label select {
+.inline-form label select,
+.settings-form label input,
+.settings-form label select {
     width: 100%;
     color: var(--ink);
+}
+
+.settings-form {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+    padding: 1rem;
+    align-items: end;
 }
 
 .check-grid {
@@ -807,7 +822,8 @@ svg {
     .count-grid,
     .weather-metrics,
     .weather-form,
-    .inline-form {
+    .inline-form,
+    .settings-form {
         grid-template-columns: 1fr;
     }
 

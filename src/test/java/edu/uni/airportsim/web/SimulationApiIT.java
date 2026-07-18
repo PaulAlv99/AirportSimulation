@@ -6,14 +6,18 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -22,6 +26,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -116,6 +123,10 @@ class SimulationApiIT {
         registry.add("airport-simulation.bag-rate", () -> 0.7);
         registry.add("airport-simulation.use-open-flights", () -> true);
         registry.add("airport-simulation.random-seed", () -> 12345L);
+        registry.add("airport-simulation.operating-start-time", () -> "05:00");
+        registry.add("airport-simulation.operating-end-time", () -> "23:00");
+        registry.add("airport-simulation.planning-horizon-minutes", () -> 360);
+        registry.add("airport-simulation.target-daily-flights", () -> 60);
         registry.add("airport-simulation.delay-probability", () -> 0.75);
         registry.add("airport-simulation.baggage-exception-probability", () -> 0.5);
         registry.add("airport-simulation.passenger-no-show-probability", () -> 0.2);
@@ -132,10 +143,13 @@ class SimulationApiIT {
         assertThat(snapshot.path("airport").path("code").asText()).isEqualTo("TST");
         assertThat(snapshot.path("counts").path("airports").asLong()).isEqualTo(3L);
         assertThat(snapshot.path("counts").path("openFlightRoutes").asLong()).isEqualTo(4L);
-        assertThat(snapshot.path("counts").path("demoFlights").asLong()).isEqualTo(6L);
+        assertThat(snapshot.path("counts").path("demoFlights").asLong()).isGreaterThan(0L);
         assertThat(snapshot.path("counts").path("baggage").asLong()).isGreaterThan(0L);
-        assertThat(snapshot.path("flights")).hasSize(6);
-        assertThat(snapshot.path("operations").path("targetDailyFlights").asInt()).isEqualTo(6);
+        assertThat(snapshot.path("flights")).isNotEmpty();
+        assertThat(snapshot.path("settings").path("targetDailyFlights").asInt()).isEqualTo(60);
+        assertThat(snapshot.path("generation").path("open").asBoolean()).isTrue();
+        assertThat(snapshot.path("generation").path("runSeed").asLong()).isGreaterThan(0L);
+        assertThat(snapshot.path("generation").path("generatedFlights").asLong()).isGreaterThan(0L);
         assertThat(snapshot.path("operations").path("passengersTotal").asLong()).isGreaterThan(0L);
         assertThat(snapshot.path("operations").path("baggageTotal").asLong()).isGreaterThan(0L);
         assertThat(snapshot.path("operations").path("gatesTotal").asLong()).isGreaterThan(0L);
@@ -212,48 +226,124 @@ class SimulationApiIT {
 
     @Test
     void exposesOperationsDashboardsAndControls() throws Exception {
-        JsonNode summary = getJson("/api/operations/summary");
-        assertThat(summary.path("passengersTotal").asLong()).isGreaterThan(0L);
-        assertThat(summary.path("baggageTotal").asLong()).isGreaterThan(0L);
-        assertThat(summary.path("checkInQueue").asLong()).isGreaterThanOrEqualTo(0L);
+        try {
+            JsonNode summary = getJson("/api/operations/summary");
+            assertThat(summary.path("passengersTotal").asLong()).isGreaterThan(0L);
+            assertThat(summary.path("baggageTotal").asLong()).isGreaterThan(0L);
+            assertThat(summary.path("checkInQueue").asLong()).isGreaterThanOrEqualTo(0L);
 
-        JsonNode bags = getJson("/api/operations/baggage?limit=2");
-        assertThat(bags).hasSizeLessThanOrEqualTo(2);
-        assertThat(bags.get(0).path("tag").asText()).startsWith("BAG");
+            JsonNode settings = getJson("/api/settings");
+            assertThat(settings.path("operatingStartTime").asText()).startsWith("05:00");
+            assertThat(settings.path("retentionDays").asInt()).isEqualTo(7);
 
-        JsonNode screenedBags = getJson("/api/operations/baggage?status=SCREENED&limit=10");
-        for (JsonNode bag : screenedBags) {
-            assertThat(bag.path("status").asText()).isEqualTo("SCREENED");
+            put("/api/settings", """
+                    {
+                      "operatingStartTime": "05:00",
+                      "operatingEndTime": "23:00",
+                      "trafficProfile": "BUSY",
+                      "targetDailyFlights": 72,
+                      "passengerLoadFactor": 0.88,
+                      "bagRate": 0.75,
+                      "staffingMultiplier": 1.4,
+                      "delayProbability": 0.6,
+                      "baggageExceptionProbability": 0.4,
+                      "passengerNoShowProbability": 0.15,
+                      "groundJitterMinutes": 18,
+                      "planningHorizonMinutes": 300,
+                      "retentionDays": 9,
+                      "randomSeed": 9999
+                    }
+                    """);
+            JsonNode updatedSettings = getJson("/api/settings");
+            assertThat(updatedSettings.path("targetDailyFlights").asInt()).isEqualTo(72);
+            assertThat(updatedSettings.path("staffingMultiplier").asDouble()).isEqualTo(1.4);
+            assertThat(updatedSettings.path("retentionDays").asInt()).isEqualTo(9);
+
+            JsonNode bags = getJson("/api/operations/baggage?limit=2");
+            assertThat(bags).hasSizeLessThanOrEqualTo(2);
+            assertThat(bags.get(0).path("tag").asText()).startsWith("BAG");
+
+            JsonNode screenedBags = getJson("/api/operations/baggage?status=SCREENED&limit=10");
+            for (JsonNode bag : screenedBags) {
+                assertThat(bag.path("status").asText()).isEqualTo("SCREENED");
+            }
+
+            JsonNode gates = getJson("/api/operations/gates");
+            assertThat(gates).isNotEmpty();
+            assertThat(gates.get(0).path("gateCode").asText()).isNotBlank();
+
+            long manifestFlightId = snapshot().path("flights").get(0).path("id").asLong();
+            JsonNode passengers = getJson("/api/flights/" + manifestFlightId + "/passengers?limit=5");
+            assertThat(passengers).isNotEmpty();
+            assertThat(passengers.get(0).path("fullName").asText()).contains(" ");
+            assertThat(passengers.get(0).path("seatNumber").asText()).isNotBlank();
+
+            JsonNode ground = getJson("/api/operations/ground");
+            assertThat(ground).isNotEmpty();
+            assertThat(ground.get(0).path("operationType").asText()).isNotBlank();
+
+            long flightId = snapshot().path("flights").get(0).path("id").asLong();
+            post("/api/flights/" + flightId + "/control", """
+                    {"status":"DELAYED","delayMinutes":25,"reason":"integration test delay"}
+                    """);
+            JsonNode delayedFlight = findFlight(snapshot(), flightId);
+            assertThat(delayedFlight.path("status").asText()).isEqualTo("DELAYED");
+            assertThat(delayedFlight.path("delayMinutes").asInt()).isEqualTo(25);
+            assertThat(delayedFlight.path("delayReason").asText()).contains("integration test delay");
+
+            post("/api/operations/disruption", """
+                    {"type":"BAGGAGE_JAM","severity":2,"durationMinutes":20}
+                    """);
+            JsonNode disrupted = getJson("/api/operations/summary");
+            assertThat(disrupted.path("baggageBacklog").asLong()).isGreaterThan(0L);
+        } finally {
+            put("/api/settings", """
+                    {
+                      "operatingStartTime": "05:00",
+                      "operatingEndTime": "23:00",
+                      "trafficProfile": "BUSY",
+                      "targetDailyFlights": 60,
+                      "passengerLoadFactor": 0.8,
+                      "bagRate": 0.7,
+                      "staffingMultiplier": 1.0,
+                      "delayProbability": 0.75,
+                      "baggageExceptionProbability": 0.5,
+                      "passengerNoShowProbability": 0.2,
+                      "groundJitterMinutes": 20,
+                      "planningHorizonMinutes": 360,
+                      "retentionDays": 7,
+                      "randomSeed": 12345
+                    }
+                    """);
         }
+    }
 
-        JsonNode gates = getJson("/api/operations/gates");
-        assertThat(gates).isNotEmpty();
-        assertThat(gates.get(0).path("gateCode").asText()).isNotBlank();
-
-        long manifestFlightId = snapshot().path("flights").get(0).path("id").asLong();
-        JsonNode passengers = getJson("/api/flights/" + manifestFlightId + "/passengers?limit=5");
-        assertThat(passengers).isNotEmpty();
-        assertThat(passengers.get(0).path("fullName").asText()).contains(" ");
-        assertThat(passengers.get(0).path("seatNumber").asText()).isNotBlank();
-
-        JsonNode ground = getJson("/api/operations/ground");
-        assertThat(ground).isNotEmpty();
-        assertThat(ground.get(0).path("operationType").asText()).isNotBlank();
-
-        long flightId = snapshot().path("flights").get(0).path("id").asLong();
-        post("/api/flights/" + flightId + "/control", """
-                {"status":"DELAYED","delayMinutes":25,"reason":"integration test delay"}
+    @Test
+    void resetClampsToNextOpeningWhenOutsideOperatingHours() throws Exception {
+        put("/api/settings", """
+                {
+                  "operatingStartTime": "11:00",
+                  "operatingEndTime": "12:00",
+                  "trafficProfile": "CALM",
+                  "targetDailyFlights": 24,
+                  "passengerLoadFactor": 0.75,
+                  "bagRate": 0.65,
+                  "staffingMultiplier": 1.1,
+                  "delayProbability": 0.2,
+                  "baggageExceptionProbability": 0.05,
+                  "passengerNoShowProbability": 0.04,
+                  "groundJitterMinutes": 10,
+                  "planningHorizonMinutes": 120,
+                  "retentionDays": 7,
+                  "randomSeed": 321
+                }
                 """);
-        JsonNode delayedFlight = findFlight(snapshot(), flightId);
-        assertThat(delayedFlight.path("status").asText()).isEqualTo("DELAYED");
-        assertThat(delayedFlight.path("delayMinutes").asInt()).isEqualTo(25);
-        assertThat(delayedFlight.path("delayReason").asText()).contains("integration test delay");
-
-        post("/api/operations/disruption", """
-                {"type":"BAGGAGE_JAM","severity":2,"durationMinutes":20}
-                """);
-        JsonNode disrupted = getJson("/api/operations/summary");
-        assertThat(disrupted.path("baggageBacklog").asLong()).isGreaterThan(0L);
+        post("/api/control/reset", null);
+        JsonNode snapshot = snapshot();
+        assertThat(snapshot.path("generation").path("open").asBoolean()).isTrue();
+        assertThat(snapshot.path("simulatedTime").asText()).startsWith("2026-01-01T11:00");
+        assertThat(snapshot.path("generation").path("nextOpeningAt").asText()).startsWith("2026-01-02T11:00");
+        assertThat(snapshot.path("flights")).isNotEmpty();
     }
 
     private JsonNode snapshot() throws Exception {
@@ -278,6 +368,18 @@ class SimulationApiIT {
         assertThat(response.getStatusCode().is2xxSuccessful() || response.getStatusCode().value() == 204).isTrue();
     }
 
+    private void put(String path, String body) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> response = restTemplate.exchange(
+                baseUrl() + path,
+                HttpMethod.PUT,
+                new HttpEntity<>(body, headers),
+                String.class
+        );
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+    }
+
     private String baseUrl() {
         return "http://localhost:" + port + "/airport-simulation";
     }
@@ -296,6 +398,15 @@ class SimulationApiIT {
             return Files.createTempDirectory("airport-sim-it");
         } catch (IOException exception) {
             throw new IllegalStateException(exception);
+        }
+    }
+
+    @TestConfiguration
+    static class ClockConfig {
+        @Bean
+        @Primary
+        Clock testClock() {
+            return Clock.fixed(Instant.parse("2026-01-01T10:00:00Z"), ZoneOffset.UTC);
         }
     }
 

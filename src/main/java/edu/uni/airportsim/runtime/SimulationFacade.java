@@ -24,7 +24,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +40,8 @@ import java.util.SplittableRandom;
 public class SimulationFacade implements ApplicationRunner {
     private static final String STATE_ID = "1";
     private static final int MAX_DETAIL_ROWS = 250;
+    private static final int DEFAULT_PLANNING_HORIZON_MINUTES = 180;
+    private static final int DEFAULT_RETENTION_DAYS = 7;
     private static final Set<String> FLIGHT_CONTROL_STATUSES = Set.of(
             "SCHEDULED",
             "CHECK_IN_OPEN",
@@ -62,13 +67,14 @@ public class SimulationFacade implements ApplicationRunner {
     private final AirportSimulationProperties properties;
     private final SimulationLogger logger;
     private final RestClient weatherClient;
-    private final Clock clock = Clock.systemDefaultZone();
+    private final Clock clock;
     private volatile boolean shuttingDown;
 
-    public SimulationFacade(JdbcTemplate jdbcTemplate, CsvCopyLoader copyLoader, AirportSimulationProperties properties) {
+    public SimulationFacade(JdbcTemplate jdbcTemplate, CsvCopyLoader copyLoader, AirportSimulationProperties properties, Clock clock) {
         this.jdbcTemplate = jdbcTemplate;
         this.copyLoader = copyLoader;
         this.properties = properties;
+        this.clock = clock;
         this.logger = new SimulationLogger(properties.logsDirectory());
         this.weatherClient = RestClient.builder()
                 .baseUrl("https://api.open-meteo.com")
@@ -279,36 +285,57 @@ public class SimulationFacade implements ApplicationRunner {
         if (shuttingDown) {
             return;
         }
-        SimulationStateRow state = loadState();
+        SimulationStateRow state = lockState();
         if (state == null || !state.running()) {
             return;
         }
 
         TimeMultiplier multiplier = TimeMultiplier.fromLabel(state.multiplier());
-        long simulatedSeconds = Math.max(1L, multiplier.factor());
+        LocalDateTime realNow = LocalDateTime.now(clock);
+        LocalDateTime lastTickAt = defaultLocalDateTime(state.lastTickAt(), realNow.minusSeconds(1));
+        long elapsedMillis = Math.max(0L, Duration.between(lastTickAt, realNow).toMillis());
+        long simulatedSeconds = Math.max(1L, Math.round((elapsedMillis / 1000.0) * multiplier.factor()));
         LocalDateTime nextTime = state.simulatedTime().plusSeconds(simulatedSeconds);
+        SimulationSettingsRow settings = requireSettings();
+        LocalDateTime minuteMarker = nextTime.truncatedTo(ChronoUnit.MINUTES);
         jdbcTemplate.update("""
                 update simulation_state
-                set simulated_time = ?, updated_at = ?, lifecycle_state = ?
+                set simulated_time = ?, updated_at = ?, lifecycle_state = ?, last_tick_at = ?, last_processed_minute = coalesce(last_processed_minute, ?)
                 where id = 1
                 """,
                 nextTime,
-                LocalDateTime.now(clock),
-                "RUNNING");
+                realNow,
+                "RUNNING",
+                realNow,
+                minuteMarker);
 
         WeatherView weather = currentWeather(state.activeAirportCode());
         WeatherSeverity severity = WeatherSeverity.fromCode(weather.severityCode());
+        maybeExtendOperatingWindow(state.activeAirportCode(), nextTime, settings);
         List<FlightRow> flights = loadFlights();
         for (FlightRow flight : flights) {
             updateFlightState(flight, nextTime, severity);
         }
         updateOperationState(nextTime, severity);
+        if (state.lastProcessedMinute() == null || !state.lastProcessedMinute().equals(minuteMarker)) {
+            applyRandomOperationalNoise(nextTime, severity);
+            jdbcTemplate.update("""
+                    update simulation_state
+                    set last_processed_minute = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    minuteMarker,
+                    realNow);
+        }
+        pruneHistoricalData(nextTime, settings);
     }
 
     public SimulationSnapshot snapshot() {
         SimulationStateRow state = requireState();
         AirportView airport = activeAirport(state.activeAirportCode());
         WeatherView weather = currentWeather(state.activeAirportCode());
+        SimulationSettingsView settings = toSettingsView(requireSettings());
+        SimulationGenerationView generation = generationStatus();
         ImportCounts counts = new ImportCounts(
                 count("import_countries"),
                 count("import_regions"),
@@ -341,6 +368,8 @@ public class SimulationFacade implements ApplicationRunner {
                 state.multiplier(),
                 airport,
                 weather,
+                settings,
+                generation,
                 counts,
                 operations,
                 flights,
@@ -420,6 +449,42 @@ public class SimulationFacade implements ApplicationRunner {
                 safeBaggageExceptionProbability(),
                 safePassengerNoShowProbability(),
                 safeGroundJitterMinutes()
+        );
+    }
+
+    public SimulationSettingsView settings() {
+        SimulationSettingsRow settings = requireSettings();
+        return toSettingsView(settings);
+    }
+
+    @Transactional
+    public SimulationSettingsView updateSettings(SimulationSettingsRequest request) {
+        Objects.requireNonNull(request, "request");
+        SimulationSettingsRow normalized = normalizeSettings(request);
+        validateOperatingWindow(normalized.operatingStartTime(), normalized.operatingEndTime());
+        upsertSettings(normalized);
+        insertEvent("INFO", "SETTINGS", "Simulation settings updated");
+        return toSettingsView(requireSettings());
+    }
+
+    public SimulationGenerationView generationStatus() {
+        SimulationStateRow state = requireState();
+        SimulationSettingsRow settings = requireSettings();
+        LocalDateTime currentTime = state.simulatedTime();
+        LocalDateTime generationCursor = defaultLocalDateTime(state.generationCursor(), currentTime);
+        LocalDateTime horizonEnd = defaultLocalDateTime(state.generationHorizonEnd(), currentTime);
+        LocalDateTime nextOpening = defaultLocalDateTime(state.nextOpeningAt(), nextOpeningAfter(currentTime, settings));
+        boolean open = isOperatingWindow(currentTime, settings);
+        long pendingFlights = countFlightsWhere("status in ('SCHEDULED', 'CHECK_IN_OPEN', 'BOARDING', 'DELAYED')");
+        return new SimulationGenerationView(
+                open,
+                generationCursor,
+                horizonEnd,
+                nextOpening,
+                state.runSeed(),
+                state.generatedFlights(),
+                pendingFlights,
+                settings.retentionDays()
         );
     }
 
@@ -642,8 +707,18 @@ public class SimulationFacade implements ApplicationRunner {
             importAllData();
             markBootstrapped();
         }
-        if (loadState() == null || count("simulation_flights") == 0 || count("simulation_baggage") == 0 || count("simulation_gates") == 0) {
+        ensureSettings();
+        SimulationStateRow state = loadState();
+        if (state == null) {
             resetSimulationState();
+            return;
+        }
+        if (count("simulation_gates") == 0) {
+            seedGates(targetFlightCount());
+        }
+        maybeExtendOperatingWindow(state.activeAirportCode(), state.simulatedTime(), requireSettings());
+        if (count("simulation_flights") == 0) {
+            updateStateGenerationCursor(state.activeAirportCode(), state.simulatedTime(), requireSettings());
         }
     }
 
@@ -815,17 +890,45 @@ public class SimulationFacade implements ApplicationRunner {
                 """);
 
         String activeAirportCode = airportByCode(selectedAirportCode).code();
-        LocalDateTime simulatedTime = LocalDateTime.now(clock).truncatedTo(ChronoUnit.MINUTES).plusMinutes(2);
+        SimulationSettingsRow settings = ensureSettings();
+        LocalDateTime simulatedTime = clampToOperatingWindow(LocalDateTime.now(clock).truncatedTo(ChronoUnit.MINUTES).plusMinutes(2), settings);
+        LocalDateTime realNow = LocalDateTime.now(clock);
+        LocalDateTime generationCursor = maxDateTime(simulatedTime.minusMinutes(90), operatingStartAt(simulatedTime, settings));
+        LocalDateTime generationHorizonEnd = generationHorizonEnd(simulatedTime, settings);
+        LocalDateTime nextOpeningAt = nextOpeningAfter(simulatedTime, settings);
+        long runSeed = resolveRunSeed(activeAirportCode, simulatedTime.toLocalDate(), settings);
         jdbcTemplate.update("""
-                insert into simulation_state (id, lifecycle_state, simulated_time, multiplier, running, active_airport_code, updated_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into simulation_state (
+                    id,
+                    lifecycle_state,
+                    simulated_time,
+                    multiplier,
+                    running,
+                    active_airport_code,
+                    updated_at,
+                    run_seed,
+                    generation_cursor,
+                    generation_horizon_end,
+                    next_opening_at,
+                    last_tick_at,
+                    last_processed_minute,
+                    generated_flights
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict (id) do update set
                     lifecycle_state = excluded.lifecycle_state,
                     simulated_time = excluded.simulated_time,
                     multiplier = excluded.multiplier,
                     running = excluded.running,
                     active_airport_code = excluded.active_airport_code,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    run_seed = excluded.run_seed,
+                    generation_cursor = excluded.generation_cursor,
+                    generation_horizon_end = excluded.generation_horizon_end,
+                    next_opening_at = excluded.next_opening_at,
+                    last_tick_at = excluded.last_tick_at,
+                    last_processed_minute = excluded.last_processed_minute,
+                    generated_flights = excluded.generated_flights
                 """,
                 1,
                 "LOADED",
@@ -833,12 +936,20 @@ public class SimulationFacade implements ApplicationRunner {
                 TimeMultiplier.X1.label(),
                 false,
                 activeAirportCode,
-                LocalDateTime.now(clock));
+                realNow,
+                runSeed,
+                generationCursor,
+                generationHorizonEnd,
+                nextOpeningAt,
+                realNow,
+                null,
+                0L);
 
-        seedDemoFlights(simulatedTime, activeAirportCode);
+        seedGates(targetFlightCount());
         if (!hasWeatherFor(activeAirportCode)) {
             seedSyntheticWeather(activeAirportCode);
         }
+        generateInitialOperatingWindow(activeAirportCode, simulatedTime, settings);
         updateOperationState(simulatedTime, WeatherSeverity.fromCode(currentWeather(activeAirportCode).severityCode()));
         insertEvent("INFO", "SIMULATION", "Simulation reset");
     }
@@ -1179,6 +1290,276 @@ public class SimulationFacade implements ApplicationRunner {
                 "WET",
                 WeatherSeverity.CAUTION.code()
         ));
+    }
+
+    private void generateInitialOperatingWindow(String airportCode, LocalDateTime currentTime, SimulationSettingsRow settings) {
+        maybeExtendOperatingWindow(airportCode, currentTime, settings);
+    }
+
+    private void maybeExtendOperatingWindow(String airportCode, LocalDateTime currentTime, SimulationSettingsRow settings) {
+        SimulationStateRow state = requireState();
+        if (!isOperatingWindow(currentTime, settings)) {
+            jdbcTemplate.update("""
+                    update simulation_state
+                    set next_opening_at = ?, generation_horizon_end = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    nextOpeningAfter(currentTime, settings),
+                    generationHorizonEnd(nextOpeningAfter(currentTime, settings), settings),
+                    LocalDateTime.now(clock));
+            return;
+        }
+
+        LocalDateTime cursor = defaultLocalDateTime(state.generationCursor(), maxDateTime(operatingStartAt(currentTime, settings), currentTime.minusMinutes(90)));
+        LocalDateTime targetEnd = generationHorizonEnd(currentTime, settings);
+        if (!cursor.isBefore(targetEnd)) {
+            jdbcTemplate.update("""
+                    update simulation_state
+                    set generation_horizon_end = ?, next_opening_at = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    targetEnd,
+                    nextOpeningAfter(currentTime, settings),
+                    LocalDateTime.now(clock));
+            return;
+        }
+
+        long generated = generateOperatingFlights(airportCode, cursor, targetEnd, currentTime, settings, state.runSeed());
+        jdbcTemplate.update("""
+                update simulation_state
+                set generation_cursor = ?,
+                    generation_horizon_end = ?,
+                    next_opening_at = ?,
+                    generated_flights = generated_flights + ?,
+                    updated_at = ?
+                where id = 1
+                """,
+                targetEnd,
+                targetEnd,
+                nextOpeningAfter(currentTime, settings),
+                generated,
+                LocalDateTime.now(clock));
+    }
+
+    private long generateOperatingFlights(
+            String airportCode,
+            LocalDateTime fromInclusive,
+            LocalDateTime toExclusive,
+            LocalDateTime currentTime,
+            SimulationSettingsRow settings,
+            long runSeed
+    ) {
+        if (!fromInclusive.isBefore(toExclusive)) {
+            return 0L;
+        }
+
+        List<RouteTemplateRow> routeTemplates = loadRouteTemplateRows(airportCode, Math.max(settings.targetDailyFlights(), properties.getFlightSeedLimit()));
+        if (routeTemplates.isEmpty()) {
+            routeTemplates = legacyRouteTemplates(airportCode, Math.max(settings.targetDailyFlights(), properties.getFlightSeedLimit()));
+        }
+        if (routeTemplates.isEmpty()) {
+            routeTemplates = fallbackRouteTemplateRows(airportCode);
+        }
+
+        WeatherSeverity weatherSeverity = WeatherSeverity.fromCode(currentWeather(airportCode).severityCode());
+        int gateCount = gateCountFor(settings.targetDailyFlights());
+        long operatingMinutes = Math.max(1L, Duration.between(operatingStartAt(fromInclusive, settings), operatingEndAt(fromInclusive, settings)).toMinutes());
+        double lambdaPerMinute = Math.max(1.0e-4, settings.targetDailyFlights() / (double) operatingMinutes);
+        long nextSequence = count("simulation_flights") + 1L;
+        long generated = 0L;
+        LocalDateTime minuteCursor = fromInclusive.truncatedTo(ChronoUnit.MINUTES);
+        while (minuteCursor.isBefore(toExclusive)) {
+            SplittableRandom minuteRandom = new SplittableRandom(mixSeed(runSeed, "minute|" + minuteCursor));
+            int flightsThisMinute = poisson(minuteRandom, lambdaPerMinute);
+            for (int index = 0; index < flightsThisMinute; index++) {
+                RouteTemplateRow template = routeTemplates.get(minuteRandom.nextInt(routeTemplates.size()));
+                LocalDateTime departure = minuteCursor.plusSeconds(minuteRandom.nextInt(0, 60));
+                if (departure.isAfter(toExclusive)) {
+                    continue;
+                }
+                long durationMinutes = Math.max(35L, Math.round(durationHoursFor(
+                        template.sourceAirport(),
+                        template.destinationAirport(),
+                        template.aircraftCode(),
+                        (int) nextSequence,
+                        minuteRandom) * 60.0));
+                LocalDateTime arrival = departure.plusMinutes(durationMinutes);
+                int delayMinutes = initialDelayMinutes(weatherSeverity, minuteRandom);
+                int passengerCount = passengerCountFor(template.aircraftCode(), minuteRandom);
+                int baggageCount = baggageCountFor(passengerCount, minuteRandom);
+                String status = statusFor(departure, arrival, delayMinutes, currentTime);
+                if (delayMinutes > 0 && "BOARDING".equals(status)) {
+                    status = "DELAYED";
+                }
+                String delayReason = delayMinutes > 0 ? delayReasonFor(weatherSeverity, minuteRandom) : null;
+                String gate = gateFor((int) nextSequence, gateCount);
+                String runway = runwayFor((int) nextSequence);
+                long flightId = jdbcTemplate.queryForObject("""
+                        insert into simulation_flights (
+                            source_row_id,
+                            flight_number,
+                            airline,
+                            origin_label,
+                            destination_label,
+                            departure_time,
+                            arrival_time,
+                            status,
+                            delay_minutes,
+                            gate,
+                            runway,
+                            weather_notes,
+                            route_source,
+                            aircraft_code,
+                            aircraft_name,
+                            passenger_count,
+                            baggage_count,
+                            direction,
+                            delay_reason,
+                            last_updated
+                        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        returning id
+                        """,
+                        Long.class,
+                        template.rowId(),
+                        flightNumberFor(template, (int) nextSequence),
+                        template.airlineName(),
+                        airportLabel(template.sourceAirport()),
+                        airportLabel(template.destinationAirport()),
+                        departure,
+                        arrival,
+                        status,
+                        delayMinutes,
+                        gate,
+                        runway,
+                        delayReason,
+                        template.routeSource(),
+                        template.aircraftCode(),
+                        template.aircraftName(),
+                        passengerCount,
+                        baggageCount,
+                        directionFor(template, airportCode),
+                        delayReason,
+                        LocalDateTime.now(clock));
+                FlightRow flight = new FlightRow(
+                        flightId,
+                        template.rowId(),
+                        flightNumberFor(template, (int) nextSequence),
+                        template.airlineName(),
+                        airportLabel(template.sourceAirport()),
+                        airportLabel(template.destinationAirport()),
+                        departure,
+                        arrival,
+                        status,
+                        delayMinutes,
+                        gate,
+                        runway,
+                        delayReason,
+                        template.routeSource(),
+                        template.aircraftCode(),
+                        template.aircraftName(),
+                        passengerCount,
+                        baggageCount,
+                        directionFor(template, airportCode),
+                        delayReason
+                );
+                seedGeneratedRecordsForFlight(flight, currentTime, minuteRandom);
+                nextSequence++;
+                generated++;
+            }
+            minuteCursor = minuteCursor.plusMinutes(1);
+        }
+        return generated;
+    }
+
+    private void seedGeneratedRecordsForFlight(FlightRow flight, LocalDateTime now, SplittableRandom random) {
+        List<Object[]> passengers = new ArrayList<>();
+        List<Object[]> baggage = new ArrayList<>();
+        List<Object[]> groundOps = new ArrayList<>();
+        for (int index = 0; index < flight.passengerCount(); index++) {
+            PassengerState passengerState = passengerStateFor(flight.status(), random);
+            boolean hasBag = index < flight.baggageCount();
+            passengers.add(new Object[] {
+                    flight.id(),
+                    passengerCode(flight.id(), index),
+                    passengerName(random),
+                    seatNumberFor(index, flight.aircraftCode()),
+                    travelDocumentFor(flight.id(), index),
+                    passengerState.status(),
+                    passengerState.checkedIn(),
+                    passengerState.securityCleared(),
+                    passengerState.boarded(),
+                    passengerState.missedConnection(),
+                    hasBag ? 1 : 0,
+                    now
+            });
+        }
+        for (int index = 0; index < flight.baggageCount(); index++) {
+            BaggageStateRow baggageState = baggageStateFor(flight.status(), random);
+            baggage.add(new Object[] {
+                    flight.id(),
+                    null,
+                    baggageTag(flight.id(), index),
+                    baggageState.status(),
+                    baggageBeltFor(flight.id()),
+                    baggageState.exceptionReason(),
+                    now
+            });
+        }
+        addGroundOperations(groundOps, flight, now, random);
+
+        batchUpdate("""
+                insert into simulation_passengers (
+                    flight_id,
+                    passenger_code,
+                    full_name,
+                    seat_number,
+                    travel_document,
+                    status,
+                    checked_in,
+                    security_cleared,
+                    boarded,
+                    missed_connection,
+                    baggage_count,
+                    last_updated
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, passengers);
+        batchUpdate("""
+                insert into simulation_baggage (
+                    flight_id,
+                    passenger_id,
+                    tag,
+                    status,
+                    belt,
+                    exception_reason,
+                    last_updated
+                ) values (?, ?, ?, ?, ?, ?, ?)
+                """, baggage);
+        batchUpdate("""
+                insert into simulation_ground_operations (
+                    flight_id,
+                    gate_code,
+                    operation_type,
+                    status,
+                    started_at,
+                    due_at,
+                    completed_at,
+                    delay_minutes,
+                    last_updated
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, groundOps);
+    }
+
+    private void pruneHistoricalData(LocalDateTime currentTime, SimulationSettingsRow settings) {
+        LocalDateTime cutoff = currentTime.minusDays(settings.retentionDays());
+        jdbcTemplate.update("""
+                delete from simulation_events
+                where occurred_at < ?
+                """, cutoff);
+        jdbcTemplate.update("""
+                delete from simulation_flights
+                where last_updated < ?
+                  and status in ('ARRIVED', 'CANCELLED')
+                """, cutoff);
     }
 
     private void updateFlightState(FlightRow flight, LocalDateTime currentTime, WeatherSeverity weatherSeverity) {
@@ -1713,11 +2094,12 @@ public class SimulationFacade implements ApplicationRunner {
 
     private int queueCapacity(String resourceName) {
         int target = targetFlightCount();
+        double staffingMultiplier = safeStaffingMultiplier();
         return switch (resourceName) {
-            case "CHECK_IN" -> Math.max(18, target / 4);
-            case "SECURITY" -> Math.max(16, target / 5);
-            case "BAGGAGE" -> Math.max(35, target / 2);
-            case "RUNWAY" -> Math.max(4, runwayCountForState());
+            case "CHECK_IN" -> Math.max(18, (int) Math.round((target / 4.0) * staffingMultiplier));
+            case "SECURITY" -> Math.max(16, (int) Math.round((target / 5.0) * staffingMultiplier));
+            case "BAGGAGE" -> Math.max(35, (int) Math.round((target / 2.0) * staffingMultiplier));
+            case "RUNWAY" -> Math.max(4, (int) Math.round(runwayCountForState() * staffingMultiplier));
             default -> 10;
         };
     }
@@ -2019,7 +2401,7 @@ public class SimulationFacade implements ApplicationRunner {
                 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 airportCode,
-                LocalDateTime.now(clock),
+                nextWeatherObservationAt(airportCode),
                 weather.temperatureCelsius(),
                 weather.feelsLikeCelsius(),
                 weather.windSpeedKmh(),
@@ -2036,6 +2418,24 @@ public class SimulationFacade implements ApplicationRunner {
                 weather.cloudLabel(),
                 weather.runwaySurface(),
                 weather.severityCode());
+    }
+
+    private LocalDateTime nextWeatherObservationAt(String airportCode) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<LocalDateTime> rows = jdbcTemplate.query("""
+                        select observed_at
+                        from import_weather_snapshots
+                        where airport_id = ?
+                        order by observed_at desc
+                        limit 1
+                        """,
+                (rs, rowNum) -> rs.getObject("observed_at", LocalDateTime.class),
+                airportCode);
+        if (rows.isEmpty()) {
+            return now;
+        }
+        LocalDateTime latest = rows.getFirst();
+        return latest.isBefore(now) ? now : latest.plusSeconds(1);
     }
 
     private WeatherInput normalizeWeatherInput(WeatherInput input) {
@@ -2256,7 +2656,19 @@ public class SimulationFacade implements ApplicationRunner {
 
     private SimulationStateRow loadState() {
         List<SimulationStateRow> rows = jdbcTemplate.query("""
-                        select lifecycle_state, simulated_time, multiplier, running, active_airport_code, updated_at
+                        select lifecycle_state,
+                               simulated_time,
+                               multiplier,
+                               running,
+                               active_airport_code,
+                               updated_at,
+                               run_seed,
+                               generation_cursor,
+                               generation_horizon_end,
+                               next_opening_at,
+                               last_tick_at,
+                               last_processed_minute,
+                               generated_flights
                         from simulation_state
                         where id = 1
                         """,
@@ -2266,7 +2678,14 @@ public class SimulationFacade implements ApplicationRunner {
                         rs.getString("multiplier"),
                         rs.getBoolean("running"),
                         rs.getString("active_airport_code"),
-                        rs.getObject("updated_at", LocalDateTime.class)
+                        rs.getObject("updated_at", LocalDateTime.class),
+                        rs.getLong("run_seed"),
+                        rs.getObject("generation_cursor", LocalDateTime.class),
+                        rs.getObject("generation_horizon_end", LocalDateTime.class),
+                        rs.getObject("next_opening_at", LocalDateTime.class),
+                        rs.getObject("last_tick_at", LocalDateTime.class),
+                        rs.getObject("last_processed_minute", LocalDateTime.class),
+                        rs.getLong("generated_flights")
                 ));
         return rows.isEmpty() ? null : rows.getFirst();
     }
@@ -2281,6 +2700,298 @@ public class SimulationFacade implements ApplicationRunner {
             throw new IllegalStateException("Simulation state could not be initialized");
         }
         return state;
+    }
+
+    private SimulationSettingsRow loadSettings() {
+        List<SimulationSettingsRow> rows = jdbcTemplate.query("""
+                        select operating_start_time,
+                               operating_end_time,
+                               traffic_profile,
+                               target_daily_flights,
+                               passenger_load_factor,
+                               bag_rate,
+                               staffing_multiplier,
+                               delay_probability,
+                               baggage_exception_probability,
+                               passenger_no_show_probability,
+                               ground_jitter_minutes,
+                               planning_horizon_minutes,
+                               retention_days,
+                               random_seed,
+                               updated_at
+                        from simulation_settings
+                        where id = 1
+                        """,
+                (rs, rowNum) -> new SimulationSettingsRow(
+                        rs.getObject("operating_start_time", LocalTime.class),
+                        rs.getObject("operating_end_time", LocalTime.class),
+                        rs.getString("traffic_profile"),
+                        rs.getInt("target_daily_flights"),
+                        rs.getDouble("passenger_load_factor"),
+                        rs.getDouble("bag_rate"),
+                        rs.getDouble("staffing_multiplier"),
+                        rs.getDouble("delay_probability"),
+                        rs.getDouble("baggage_exception_probability"),
+                        rs.getDouble("passenger_no_show_probability"),
+                        rs.getInt("ground_jitter_minutes"),
+                        rs.getInt("planning_horizon_minutes"),
+                        rs.getInt("retention_days"),
+                        rs.getLong("random_seed"),
+                        rs.getObject("updated_at", LocalDateTime.class)
+                ));
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    private SimulationSettingsRow requireSettings() {
+        SimulationSettingsRow settings = loadSettings();
+        if (settings == null) {
+            settings = defaultSettings();
+            upsertSettings(settings);
+        }
+        return settings;
+    }
+
+    private SimulationSettingsRow ensureSettings() {
+        SimulationSettingsRow settings = loadSettings();
+        if (settings == null) {
+            settings = defaultSettings();
+            upsertSettings(settings);
+        }
+        return settings;
+    }
+
+    private SimulationSettingsRow defaultSettings() {
+        return new SimulationSettingsRow(
+                settingsOperatingStartTime(),
+                settingsOperatingEndTime(),
+                blankToDefault(properties.getTrafficProfile(), "BUSY").toUpperCase(Locale.ROOT),
+                clamp(properties.getTargetDailyFlights(), 1, 1000),
+                clampDouble(properties.getPassengerLoadFactor(), 0.35, 1.0),
+                clampDouble(properties.getBagRate(), 0.0, 1.4),
+                clampDouble(properties.getStaffingMultiplier(), 0.5, 3.0),
+                clampDouble(properties.getDelayProbability(), 0.0, 1.0),
+                clampDouble(properties.getBaggageExceptionProbability(), 0.0, 1.0),
+                clampDouble(properties.getPassengerNoShowProbability(), 0.0, 1.0),
+                clamp(properties.getGroundJitterMinutes(), 0, 120),
+                clamp(properties.getPlanningHorizonMinutes(), 30, 720),
+                clamp(properties.getRetentionDays(), 1, 30),
+                Math.max(0L, properties.getRandomSeed()),
+                LocalDateTime.now(clock)
+        );
+    }
+
+    private SimulationSettingsRow normalizeSettings(SimulationSettingsRequest request) {
+        return new SimulationSettingsRow(
+                request.operatingStartTime(),
+                request.operatingEndTime(),
+                blankToDefault(request.trafficProfile(), safeTrafficProfile()),
+                clamp(request.targetDailyFlights(), 1, 1000),
+                clampDouble(request.passengerLoadFactor(), 0.1, 1.5),
+                clampDouble(request.bagRate(), 0.0, 2.0),
+                clampDouble(request.staffingMultiplier(), 0.5, 3.0),
+                clampDouble(request.delayProbability(), 0.0, 1.0),
+                clampDouble(request.baggageExceptionProbability(), 0.0, 1.0),
+                clampDouble(request.passengerNoShowProbability(), 0.0, 1.0),
+                clamp(request.groundJitterMinutes(), 0, 120),
+                clamp(request.planningHorizonMinutes(), 30, 720),
+                clamp(request.retentionDays(), 1, 30),
+                Math.max(0L, request.randomSeed()),
+                LocalDateTime.now(clock)
+        );
+    }
+
+    private void validateOperatingWindow(LocalTime start, LocalTime end) {
+        if (start == null || end == null) {
+            throw new IllegalArgumentException("Operating hours are required");
+        }
+        if (!start.isBefore(end)) {
+            throw new IllegalArgumentException("Operating start must be before operating end");
+        }
+    }
+
+    private void upsertSettings(SimulationSettingsRow settings) {
+        jdbcTemplate.update("""
+                insert into simulation_settings (
+                    id,
+                    operating_start_time,
+                    operating_end_time,
+                    traffic_profile,
+                    target_daily_flights,
+                    passenger_load_factor,
+                    bag_rate,
+                    staffing_multiplier,
+                    delay_probability,
+                    baggage_exception_probability,
+                    passenger_no_show_probability,
+                    ground_jitter_minutes,
+                    planning_horizon_minutes,
+                    retention_days,
+                    random_seed,
+                    updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict (id) do update set
+                    operating_start_time = excluded.operating_start_time,
+                    operating_end_time = excluded.operating_end_time,
+                    traffic_profile = excluded.traffic_profile,
+                    target_daily_flights = excluded.target_daily_flights,
+                    passenger_load_factor = excluded.passenger_load_factor,
+                    bag_rate = excluded.bag_rate,
+                    staffing_multiplier = excluded.staffing_multiplier,
+                    delay_probability = excluded.delay_probability,
+                    baggage_exception_probability = excluded.baggage_exception_probability,
+                    passenger_no_show_probability = excluded.passenger_no_show_probability,
+                    ground_jitter_minutes = excluded.ground_jitter_minutes,
+                    planning_horizon_minutes = excluded.planning_horizon_minutes,
+                    retention_days = excluded.retention_days,
+                    random_seed = excluded.random_seed,
+                    updated_at = excluded.updated_at
+                """,
+                1,
+                settings.operatingStartTime(),
+                settings.operatingEndTime(),
+                settings.trafficProfile(),
+                settings.targetDailyFlights(),
+                settings.passengerLoadFactor(),
+                settings.bagRate(),
+                settings.staffingMultiplier(),
+                settings.delayProbability(),
+                settings.baggageExceptionProbability(),
+                settings.passengerNoShowProbability(),
+                settings.groundJitterMinutes(),
+                settings.planningHorizonMinutes(),
+                settings.retentionDays(),
+                settings.randomSeed(),
+                settings.updatedAt());
+    }
+
+    private SimulationSettingsView toSettingsView(SimulationSettingsRow settings) {
+        return new SimulationSettingsView(
+                settings.operatingStartTime(),
+                settings.operatingEndTime(),
+                settings.trafficProfile(),
+                settings.targetDailyFlights(),
+                settings.passengerLoadFactor(),
+                settings.bagRate(),
+                settings.staffingMultiplier(),
+                settings.delayProbability(),
+                settings.baggageExceptionProbability(),
+                settings.passengerNoShowProbability(),
+                settings.groundJitterMinutes(),
+                settings.planningHorizonMinutes(),
+                settings.retentionDays(),
+                settings.randomSeed()
+        );
+    }
+
+    private boolean isOperatingWindow(LocalDateTime time, SimulationSettingsRow settings) {
+        LocalDateTime start = operatingStartAt(time, settings);
+        LocalDateTime end = operatingEndAt(time, settings);
+        return !time.isBefore(start) && time.isBefore(end);
+    }
+
+    private LocalDateTime operatingStartAt(LocalDateTime time, SimulationSettingsRow settings) {
+        return time.toLocalDate().atTime(settings.operatingStartTime());
+    }
+
+    private LocalDateTime operatingEndAt(LocalDateTime time, SimulationSettingsRow settings) {
+        return time.toLocalDate().atTime(settings.operatingEndTime());
+    }
+
+    private LocalDateTime nextOpeningAfter(LocalDateTime time, SimulationSettingsRow settings) {
+        LocalDateTime start = operatingStartAt(time, settings);
+        LocalDateTime end = operatingEndAt(time, settings);
+        if (time.isBefore(start)) {
+            return start;
+        }
+        if (time.isBefore(end)) {
+            return time.toLocalDate().plusDays(1).atTime(settings.operatingStartTime());
+        }
+        return time.toLocalDate().plusDays(1).atTime(settings.operatingStartTime());
+    }
+
+    private LocalDateTime clampToOperatingWindow(LocalDateTime time, SimulationSettingsRow settings) {
+        if (isOperatingWindow(time, settings)) {
+            return time;
+        }
+        return nextOpeningAfter(time, settings);
+    }
+
+    private LocalDateTime generationHorizonEnd(LocalDateTime time, SimulationSettingsRow settings) {
+        LocalDateTime close = operatingEndAt(time, settings);
+        LocalDateTime horizon = time.plusMinutes(settings.planningHorizonMinutes());
+        return horizon.isBefore(close) ? horizon : close;
+    }
+
+    private LocalDateTime maxDateTime(LocalDateTime first, LocalDateTime second) {
+        return first.isAfter(second) ? first : second;
+    }
+
+    private void updateStateGenerationCursor(String airportCode, LocalDateTime currentTime, SimulationSettingsRow settings) {
+        maybeExtendOperatingWindow(airportCode, currentTime, settings);
+    }
+
+    private LocalTime settingsOperatingStartTime() {
+        LocalTime value = properties.getOperatingStartTime();
+        return value == null ? LocalTime.of(5, 0) : value;
+    }
+
+    private LocalTime settingsOperatingEndTime() {
+        LocalTime value = properties.getOperatingEndTime();
+        return value == null ? LocalTime.of(23, 0) : value;
+    }
+
+    private long resolveRunSeed(String airportCode, LocalDate operatingDate, SimulationSettingsRow settings) {
+        long configuredSeed = settings.randomSeed();
+        if (configuredSeed > 0L) {
+            return mixSeed(configuredSeed, airportCode + "|" + operatingDate + "|" + settings.trafficProfile() + "|" + settings.targetDailyFlights());
+        }
+        return mixSeed(System.nanoTime(), airportCode + "|" + operatingDate + "|" + settings.trafficProfile());
+    }
+
+    private long currentRunSeed() {
+        SimulationStateRow state = loadState();
+        if (state != null && state.runSeed() != 0L) {
+            return state.runSeed();
+        }
+        SimulationSettingsRow settings = requireSettings();
+        return resolveRunSeed(activeAirportCode(), LocalDate.now(clock), settings);
+    }
+
+    private SimulationStateRow lockState() {
+        List<SimulationStateRow> rows = jdbcTemplate.query("""
+                        select lifecycle_state,
+                               simulated_time,
+                               multiplier,
+                               running,
+                               active_airport_code,
+                               updated_at,
+                               run_seed,
+                               generation_cursor,
+                               generation_horizon_end,
+                               next_opening_at,
+                               last_tick_at,
+                               last_processed_minute,
+                               generated_flights
+                        from simulation_state
+                        where id = 1
+                        for update
+                        """,
+                (rs, rowNum) -> new SimulationStateRow(
+                        rs.getString("lifecycle_state"),
+                        rs.getObject("simulated_time", LocalDateTime.class),
+                        rs.getString("multiplier"),
+                        rs.getBoolean("running"),
+                        rs.getString("active_airport_code"),
+                        rs.getObject("updated_at", LocalDateTime.class),
+                        rs.getLong("run_seed"),
+                        rs.getObject("generation_cursor", LocalDateTime.class),
+                        rs.getObject("generation_horizon_end", LocalDateTime.class),
+                        rs.getObject("next_opening_at", LocalDateTime.class),
+                        rs.getObject("last_tick_at", LocalDateTime.class),
+                        rs.getObject("last_processed_minute", LocalDateTime.class),
+                        rs.getLong("generated_flights")
+                ));
+        return rows.isEmpty() ? null : rows.getFirst();
     }
 
     private void insertEvent(String level, String category, String message) {
@@ -2545,7 +3256,7 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private int targetFlightCount() {
-        int configuredTarget = properties.getTargetDailyFlights();
+        int configuredTarget = requireSettings().targetDailyFlights();
         if (configuredTarget > 0) {
             return clamp(configuredTarget, 1, 1000);
         }
@@ -2553,15 +3264,19 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private String safeTrafficProfile() {
-        return blankToDefault(properties.getTrafficProfile(), "BUSY").toUpperCase(Locale.ROOT);
+        return blankToDefault(requireSettings().trafficProfile(), blankToDefault(properties.getTrafficProfile(), "BUSY")).toUpperCase(Locale.ROOT);
     }
 
     private double safeLoadFactor() {
-        return clampDouble(properties.getPassengerLoadFactor(), 0.35, 1.0);
+        return clampDouble(requireSettings().passengerLoadFactor(), 0.35, 1.0);
     }
 
     private double safeBagRate() {
-        return clampDouble(properties.getBagRate(), 0.0, 1.4);
+        return clampDouble(requireSettings().bagRate(), 0.0, 1.4);
+    }
+
+    private double safeStaffingMultiplier() {
+        return clampDouble(requireSettings().staffingMultiplier(), 0.5, 3.0);
     }
 
     private boolean stochasticMode() {
@@ -2572,7 +3287,7 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private long configuredRandomSeed() {
-        return Math.max(0L, properties.getRandomSeed());
+        return Math.max(0L, requireSettings().randomSeed());
     }
 
     private boolean hasConfiguredRandomSeed() {
@@ -2580,25 +3295,31 @@ public class SimulationFacade implements ApplicationRunner {
     }
 
     private double safeDelayProbability() {
-        return clampDouble(properties.getDelayProbability(), 0.0, 1.0);
+        return clampDouble(requireSettings().delayProbability(), 0.0, 1.0);
     }
 
     private double safeBaggageExceptionProbability() {
-        return clampDouble(properties.getBaggageExceptionProbability(), 0.0, 1.0);
+        return clampDouble(requireSettings().baggageExceptionProbability(), 0.0, 1.0);
     }
 
     private double safePassengerNoShowProbability() {
-        return clampDouble(properties.getPassengerNoShowProbability(), 0.0, 1.0);
+        return clampDouble(requireSettings().passengerNoShowProbability(), 0.0, 1.0);
     }
 
     private int safeGroundJitterMinutes() {
-        return clamp(properties.getGroundJitterMinutes(), 0, 120);
+        return clamp(requireSettings().groundJitterMinutes(), 0, 120);
+    }
+
+    private int safePlanningHorizonMinutes() {
+        return clamp(requireSettings().planningHorizonMinutes(), 30, 720);
+    }
+
+    private int safeRetentionDays() {
+        return clamp(requireSettings().retentionDays(), 1, 30);
     }
 
     private SplittableRandom stochasticRandom(String salt) {
-        long baseSeed = hasConfiguredRandomSeed()
-                ? configuredRandomSeed()
-                : System.nanoTime() ^ LocalDateTime.now(clock).toString().hashCode();
+        long baseSeed = currentRunSeed();
         return new SplittableRandom(mixSeed(baseSeed, salt));
     }
 
@@ -2618,6 +3339,30 @@ public class SimulationFacade implements ApplicationRunner {
 
     private boolean eventOccurs(SplittableRandom random, double probability) {
         return random.nextDouble() < clampDouble(probability, 0.0, 1.0);
+    }
+
+    private int poisson(SplittableRandom random, double lambda) {
+        if (lambda <= 0.0) {
+            return 0;
+        }
+        if (lambda < 30.0) {
+            double threshold = Math.exp(-lambda);
+            int k = 0;
+            double product = 1.0;
+            do {
+                k++;
+                product *= random.nextDouble();
+            } while (product > threshold);
+            return k - 1;
+        }
+        double normal = lambda + (gaussian(random) * Math.sqrt(lambda));
+        return Math.max(0, (int) Math.round(normal));
+    }
+
+    private double gaussian(SplittableRandom random) {
+        double u1 = Math.max(1.0e-12, random.nextDouble());
+        double u2 = random.nextDouble();
+        return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
     }
 
     private double triangular(SplittableRandom random) {
@@ -2883,6 +3628,10 @@ public class SimulationFacade implements ApplicationRunner {
         return value == null || value.isBlank() ? defaultValue : value.trim();
     }
 
+    private static LocalDateTime defaultLocalDateTime(LocalDateTime value, LocalDateTime defaultValue) {
+        return value == null ? defaultValue : value;
+    }
+
     private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }
@@ -2898,6 +3647,32 @@ public class SimulationFacade implements ApplicationRunner {
             String multiplier,
             boolean running,
             String activeAirportCode,
+            LocalDateTime updatedAt,
+            long runSeed,
+            LocalDateTime generationCursor,
+            LocalDateTime generationHorizonEnd,
+            LocalDateTime nextOpeningAt,
+            LocalDateTime lastTickAt,
+            LocalDateTime lastProcessedMinute,
+            long generatedFlights
+    ) {
+    }
+
+    private record SimulationSettingsRow(
+            LocalTime operatingStartTime,
+            LocalTime operatingEndTime,
+            String trafficProfile,
+            int targetDailyFlights,
+            double passengerLoadFactor,
+            double bagRate,
+            double staffingMultiplier,
+            double delayProbability,
+            double baggageExceptionProbability,
+            double passengerNoShowProbability,
+            int groundJitterMinutes,
+            int planningHorizonMinutes,
+            int retentionDays,
+            long randomSeed,
             LocalDateTime updatedAt
     ) {
     }

@@ -16,6 +16,7 @@ const state = {
     airportSearchQuery: "",
     airportSearchTimer: null,
     airportSearchController: null,
+    settingsTouched: false,
     lastBaggageLoad: 0,
     lastAirsideLoad: 0,
     lastManifestLoad: 0
@@ -61,7 +62,8 @@ function bindElements() {
         "airport-summary-code", "airport-search", "refresh-airports", "airport-body",
         "weather-current", "weather-source", "fetch-weather", "weather-form",
         "load-weather-form", "count-grid", "events", "event-count", "start-btn",
-        "pause-btn", "reset-btn", "reseed-btn"
+        "pause-btn", "reset-btn", "reseed-btn", "generation-note", "generation-grid",
+        "settings-form"
     ]) {
         elements[toCamel(id)] = document.getElementById(id);
     }
@@ -118,6 +120,14 @@ function bindEvents() {
         event.preventDefault();
         state.weatherTouched = false;
         await mutate("api/weather/manual", weatherPayload(), {expectJson: true});
+    });
+    elements.settingsForm.addEventListener("input", () => {
+        state.settingsTouched = true;
+    });
+    elements.settingsForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        state.settingsTouched = false;
+        await mutate("api/settings", settingsPayload(), {method: "PUT", expectJson: true});
     });
 }
 
@@ -307,7 +317,7 @@ async function loadPassengerManifest(flight, force = true) {
 async function mutate(path, body, options = {}) {
     try {
         const response = await fetch(path, {
-            method: "POST",
+            method: options.method || "POST",
             headers: body ? {"Content-Type": "application/json"} : undefined,
             body: body ? JSON.stringify(body) : undefined
         });
@@ -333,6 +343,7 @@ function render(snapshot) {
 
     renderOverview(snapshot);
     renderOperations(snapshot);
+    renderGeneration(snapshot.generation, snapshot.settings);
     renderPassengerDashboard(operations);
     renderAirportSummary(snapshot);
     renderWeather(snapshot.weather, snapshot.airport);
@@ -345,6 +356,9 @@ function render(snapshot) {
 
     if (!state.weatherTouched) {
         fillWeatherForm(snapshot.weather);
+    }
+    if (!state.settingsTouched) {
+        fillSettingsForm(snapshot.settings);
     }
     createIcons();
 }
@@ -418,6 +432,26 @@ function renderOperations(snapshot) {
         ["Delayed Bags", operations.bagsDelayed],
         ["Open Gates", operations.gatesOpen],
         ["Occupied Gates", operations.gatesOccupied]
+    ]);
+}
+
+function renderGeneration(generation, settings) {
+    if (!generation) {
+        elements.generationNote.textContent = "--";
+        elements.generationGrid.innerHTML = "";
+        return;
+    }
+    const openLabel = generation.open ? "Operating" : "Night hold";
+    elements.generationNote.textContent = `${openLabel} | window ${formatTimeValue(settings?.operatingStartTime)}-${formatTimeValue(settings?.operatingEndTime)} | seed ${number(generation.runSeed)}`;
+    elements.generationGrid.innerHTML = countItems([
+        ["Window", generation.open ? "Open" : "Closed"],
+        ["Run Seed", generation.runSeed],
+        ["Cursor", formatDate(generation.generationCursor)],
+        ["Horizon", formatDate(generation.generationHorizonEnd)],
+        ["Next Opening", formatDate(generation.nextOpeningAt)],
+        ["Generated Flights", generation.generatedFlights],
+        ["Pending Flights", generation.pendingFlights],
+        ["Retention", `${number(generation.retentionDays)} days`]
     ]);
 }
 
@@ -749,6 +783,54 @@ function weatherPayload() {
         runwaySurface: form.elements.runwaySurface.value,
         severityCode: form.elements.severityCode.value
     };
+}
+
+function fillSettingsForm(settings) {
+    if (!settings) {
+        return;
+    }
+    const form = elements.settingsForm;
+    form.elements.operatingStartTime.value = formatTimeValue(settings.operatingStartTime);
+    form.elements.operatingEndTime.value = formatTimeValue(settings.operatingEndTime);
+    form.elements.trafficProfile.value = settings.trafficProfile ?? "";
+    form.elements.targetDailyFlights.value = settings.targetDailyFlights ?? 0;
+    form.elements.passengerLoadFactor.value = settings.passengerLoadFactor ?? 0;
+    form.elements.bagRate.value = settings.bagRate ?? 0;
+    form.elements.staffingMultiplier.value = settings.staffingMultiplier ?? 1;
+    form.elements.delayProbability.value = settings.delayProbability ?? 0;
+    form.elements.baggageExceptionProbability.value = settings.baggageExceptionProbability ?? 0;
+    form.elements.passengerNoShowProbability.value = settings.passengerNoShowProbability ?? 0;
+    form.elements.groundJitterMinutes.value = settings.groundJitterMinutes ?? 0;
+    form.elements.planningHorizonMinutes.value = settings.planningHorizonMinutes ?? 0;
+    form.elements.retentionDays.value = settings.retentionDays ?? 0;
+    form.elements.randomSeed.value = settings.randomSeed ?? 0;
+}
+
+function settingsPayload() {
+    const form = elements.settingsForm;
+    return {
+        operatingStartTime: form.elements.operatingStartTime.value,
+        operatingEndTime: form.elements.operatingEndTime.value,
+        trafficProfile: form.elements.trafficProfile.value.trim(),
+        targetDailyFlights: intValue(form.elements.targetDailyFlights),
+        passengerLoadFactor: numberValue(form.elements.passengerLoadFactor),
+        bagRate: numberValue(form.elements.bagRate),
+        staffingMultiplier: numberValue(form.elements.staffingMultiplier),
+        delayProbability: numberValue(form.elements.delayProbability),
+        baggageExceptionProbability: numberValue(form.elements.baggageExceptionProbability),
+        passengerNoShowProbability: numberValue(form.elements.passengerNoShowProbability),
+        groundJitterMinutes: intValue(form.elements.groundJitterMinutes),
+        planningHorizonMinutes: intValue(form.elements.planningHorizonMinutes),
+        retentionDays: intValue(form.elements.retentionDays),
+        randomSeed: Math.max(0, Math.trunc(Number(form.elements.randomSeed.value || 0)))
+    };
+}
+
+function formatTimeValue(value) {
+    if (!value) {
+        return "";
+    }
+    return String(value).slice(0, 5);
 }
 
 function setTab(tabName) {

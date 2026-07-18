@@ -7,6 +7,9 @@ import edu.uni.airportsim.runtime.GroundOperationView;
 import edu.uni.airportsim.runtime.OperationSummary;
 import edu.uni.airportsim.runtime.PassengerManifestView;
 import edu.uni.airportsim.runtime.SimulationFacade;
+import edu.uni.airportsim.runtime.SimulationGenerationView;
+import edu.uni.airportsim.runtime.SimulationSettingsRequest;
+import edu.uni.airportsim.runtime.SimulationSettingsView;
 import edu.uni.airportsim.runtime.SimulationSnapshot;
 import edu.uni.airportsim.runtime.WeatherInput;
 import edu.uni.airportsim.runtime.WeatherView;
@@ -23,6 +26,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -39,6 +43,21 @@ public class SimulationController {
     @GetMapping("/snapshot")
     public SimulationSnapshot snapshot() {
         return facade.snapshot();
+    }
+
+    @GetMapping("/settings")
+    public SimulationSettingsView settings() {
+        return facade.settings();
+    }
+
+    @PutMapping("/settings")
+    public SimulationSettingsView updateSettings(@Valid @RequestBody SimulationSettingsRequest request) {
+        return facade.updateSettings(request);
+    }
+
+    @GetMapping("/generation")
+    public SimulationGenerationView generation() {
+        return facade.generationStatus();
     }
 
     @GetMapping("/airports")
